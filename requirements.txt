@@ -1,0 +1,7 @@
+langgraph
+langchain-aws
+langchain-core
+bedrock-agentcore
+boto3
+requests
+
