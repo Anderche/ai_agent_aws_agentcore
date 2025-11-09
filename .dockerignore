@@ -1,0 +1,9 @@
+.git
+__pycache__
+*.pyc
+.pytest_cache
+.venv
+.env
+data/sec_inquiries/attachments
+data/sec_inquiries/inquiries.db
+
