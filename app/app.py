@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Sequence, cast
@@ -23,6 +24,7 @@ from .observability import begin_subsegment, configure_observability, end_subseg
 from .rag_pipeline import (
     EmbeddingPipelineError,
     RagQueryError,
+    VECTORSTORE_DIR,
     query_vectorstore,
     run_embedding_pipeline,
 )
@@ -70,6 +72,176 @@ _EXIT_FILING_CHAT_PATTERN = re.compile(
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class VectorstoreSummary:
+    path: Path
+    label: str
+    form: str | None
+    filing_date: str | None
+    cik: str | None
+    source_url: str | None
+
+    def describe(self) -> str:
+        details: list[str] = []
+        if self.form:
+            details.append(f"Form {self.form}")
+        if self.filing_date:
+            details.append(f"filed {self.filing_date}")
+        if self.cik:
+            details.append(f"CIK {self.cik}")
+        details_text = ", ".join(details) if details else "Metadata not available"
+        return f"{self.label} — {details_text}"
+
+
+def _load_vectorstore_summary(path: Path) -> VectorstoreSummary | None:
+    metadata: dict[str, Any] = {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                record = json.loads(stripped)
+                metadata = record.get("metadata") or {}
+                break
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Unable to read vector store metadata from %s: %s", path, exc)
+        return None
+
+    label = metadata.get("document_name") or metadata.get("title")
+    if not label:
+        label = path.stem.replace("_vectorstore", "")
+
+    return VectorstoreSummary(
+        path=path,
+        label=label,
+        form=metadata.get("form"),
+        filing_date=metadata.get("filing_date"),
+        cik=metadata.get("cik"),
+        source_url=metadata.get("source_url"),
+    )
+
+
+def _discover_vectorstore_summaries() -> list[VectorstoreSummary]:
+    if not VECTORSTORE_DIR.exists():
+        return []
+    summaries: list[VectorstoreSummary] = []
+    for path in sorted(VECTORSTORE_DIR.glob("*_vectorstore.jsonl")):
+        summary = _load_vectorstore_summary(path)
+        if summary:
+            summaries.append(summary)
+    return summaries
+
+
+def _print_vectorstore_overview(summaries: list[VectorstoreSummary]) -> None:
+    print("Embedded filings available locally:")
+    for index, summary in enumerate(summaries, start=1):
+        print(f"  {index}. {summary.describe()}")
+        if summary.source_url:
+            print(f"     Source: {summary.source_url}")
+    print(
+        "Options: [1] Query embedded filing   [2] Search SEC EDGAR   "
+        "Type 'exit' to quit."
+    )
+
+
+def _vectorstore_menu(
+    summaries: list[VectorstoreSummary],
+    settings,
+) -> str:
+    if not summaries:
+        return "sec"
+
+    while True:
+        _print_vectorstore_overview(summaries)
+        choice = input("Select option (1, 2, or 'exit'): ").strip().lower()
+        if choice in {"exit", "quit"}:
+            return "exit"
+        if choice in {"2", "sec", "search"}:
+            return "sec"
+        if choice in {"1", "query"}:
+            continue_session = _run_vectorstore_query_session(summaries, settings)
+            if not continue_session:
+                return "exit"
+        else:
+            print("Please enter '1', '2', or 'exit'.")
+
+
+def _run_vectorstore_query_session(
+    summaries: list[VectorstoreSummary],
+    settings,
+) -> bool:
+    if not summaries:
+        print("No embedded filings found to query.")
+        return True
+
+    while True:
+        selection = input(
+            "Select a filing number to query "
+            "(or type 'menu' to return, 'exit' to quit): "
+        ).strip().lower()
+
+        if selection in {"menu"}:
+            return True
+        if selection in {"exit", "quit"}:
+            return False
+        if selection in {"list", "ls"}:
+            _print_vectorstore_overview(summaries)
+            continue
+
+        if selection.isdigit():
+            index = int(selection)
+            if 1 <= index <= len(summaries):
+                result = _run_vectorstore_question_loop(summaries[index - 1], settings)
+                if result == "exit":
+                    return False
+                if result == "menu":
+                    return True
+                # result == "select" means pick another filing
+                continue
+
+        print(
+            f"Enter a number between 1 and {len(summaries)}, "
+            "'menu' to return, or 'exit' to quit."
+        )
+
+
+def _run_vectorstore_question_loop(
+    summary: VectorstoreSummary,
+    settings,
+) -> str:
+    print(
+        f"Querying `{summary.label}`. "
+        "Ask a question, or type 'back' for other filings, 'menu' for main options, "
+        "'exit' to quit."
+    )
+
+    while True:
+        question = input("Vectorstore question: ").strip()
+        lowered = question.lower()
+
+        if lowered in {"exit", "quit"}:
+            return "exit"
+        if lowered == "menu":
+            return "menu"
+        if lowered in {"back", "change"}:
+            return "select"
+        if not question:
+            print("Please enter a question or one of the commands above.")
+            continue
+
+        try:
+            answer = query_vectorstore(summary.path, question, settings=settings)
+        except RagQueryError as exc:
+            print(f"Vectorstore error: {exc}")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            print(f"Unexpected vectorstore error: {exc}")
+            continue
+
+        print(f"Vectorstore: {answer}")
 
 app = BedrockAgentCoreApp()
 _initial_settings = load_settings()
@@ -926,6 +1098,11 @@ def _ensure_recent_filings(
 def run_local_cli() -> None:
     print("AgentCore POC CLI. Type 'exit' to quit.")
     settings = load_settings()
+    vectorstore_summaries = _discover_vectorstore_summaries()
+    menu_result = _vectorstore_menu(vectorstore_summaries, settings)
+    if menu_result == "exit":
+        return
+
     session_id = str(uuid.uuid4())
     context = SimpleNamespace(
         session_id=session_id,
