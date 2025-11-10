@@ -2,7 +2,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Iterable, List, Tuple
+from collections import defaultdict
+from pathlib import Path
+import shutil
+from typing import Dict, Iterable, List, Literal, Tuple
+from urllib.parse import urlparse
 
 import requests
 
@@ -14,11 +18,25 @@ class SecLookupError(Exception):
     """Raised when SEC data cannot be retrieved or parsed."""
 
 
+class SecDownloadError(Exception):
+    """Raised when SEC filings cannot be downloaded."""
+
+
 @dataclass
 class SecFiling:
     date: str
     form: str
     url: str
+    description: str | None = None
+
+
+@dataclass(frozen=True)
+class FilingMenuEntry:
+    index: int
+    kind: Literal["filing", "type", "year"]
+    filing: SecFiling | None = None
+    form: str | None = None
+    year: str | None = None
 
 
 def parse_query(query: str) -> Tuple[str, str]:
@@ -43,6 +61,11 @@ def _sec_request_headers() -> dict[str, str]:
     }
 
 
+def build_sec_request_headers() -> dict[str, str]:
+    """Return SEC-compliant request headers for use by other modules."""
+    return dict(_sec_request_headers())
+
+
 def _request_json(url: str, timeout: float) -> dict:
     response = requests.get(url, headers=_sec_request_headers(), timeout=timeout)
     if response.status_code == 403:
@@ -55,6 +78,46 @@ def _request_json(url: str, timeout: float) -> dict:
         return response.json()
     except ValueError as exc:  # JSONDecodeError derives from ValueError
         raise SecLookupError(f"Received invalid JSON from {url}: {exc}") from exc
+
+
+def download_filing_to_directory(
+    filing: SecFiling,
+    *,
+    timeout: float,
+    download_dir: Path | None = None,
+) -> Path:
+    """
+    Download a SEC filing to the provided directory, ensuring only the new file remains.
+
+    Returns the path to the downloaded file.
+    """
+    # Use './downloads' as the default directory instead of user's Downloads folder
+    target_dir = (download_dir or Path("./downloads")).expanduser()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    for item in target_dir.iterdir():
+        if item.is_file():
+            item.unlink()
+        elif item.is_dir():
+            shutil.rmtree(item)
+
+    response = requests.get(filing.url, headers=_sec_request_headers(), timeout=timeout)
+    if response.status_code == 403:
+        raise SecDownloadError(
+            "SEC returned 403 Forbidden when downloading the filing. "
+            "Ensure SEC_USER_AGENT is set with contact information per SEC guidelines."
+        )
+    if response.status_code != 200:
+        raise SecDownloadError(
+            f"Unable to download filing {filing.form or ''} from {filing.url} "
+            f"(status code {response.status_code})."
+        )
+
+    parsed = urlparse(filing.url)
+    filename = Path(parsed.path).name or f"{filing.form or 'filing'}.html"
+    destination = target_dir / filename
+    destination.write_bytes(response.content)
+    return destination
 
 
 @dataclass
@@ -121,20 +184,31 @@ def get_filings(
     accession_numbers: List[str] = list(filings.get("accessionNumber", []))
     primary_documents: List[str] = list(filings.get("primaryDocument", []))
     report_dates: List[str] = list(filings.get("reportDate", []))
+    descriptions: List[str] = list(filings.get("description", []))
+
+    sequence_length = min(
+        len(forms),
+        len(accession_numbers),
+        len(primary_documents),
+        len(report_dates),
+    )
 
     matching: List[SecFiling] = []
-    for idx, current_form in enumerate(forms):
+    for idx in range(sequence_length):
+        current_form = str(forms[idx])
         if form_type and current_form != form_type:
             continue
         accession = str(accession_numbers[idx]).replace("-", "")
         primary_doc = str(primary_documents[idx])
         report_date = str(report_dates[idx])
+        description = descriptions[idx] if idx < len(descriptions) else None
         filing_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{primary_doc}"
         matching.append(
             SecFiling(
                 date=report_date or "N/A",
                 form=current_form,
                 url=filing_url,
+                description=str(description) if description else None,
             )
         )
         if limit and len(matching) >= limit:
@@ -143,9 +217,26 @@ def get_filings(
 
 
 def get_recent_filings(
-    cik: str, *, timeout: float, limit: int = 5
+    cik: str, *, timeout: float, limit: int = 20
 ) -> List[SecFiling]:
     return get_filings(cik, None, timeout=timeout, limit=limit)
+
+
+def bucket_filings_by_type(filings: Iterable[SecFiling]) -> Dict[str, List[SecFiling]]:
+    buckets: Dict[str, List[SecFiling]] = defaultdict(list)
+    for filing in filings:
+        buckets[filing.form].append(filing)
+    return dict(buckets)
+
+
+def bucket_filings_by_year(filings: Iterable[SecFiling]) -> Dict[str, List[SecFiling]]:
+    buckets: Dict[str, List[SecFiling]] = defaultdict(list)
+    for filing in filings:
+        year = "Unknown"
+        if filing.date and len(filing.date) >= 4:
+            year = filing.date[:4]
+        buckets[year].append(filing)
+    return dict(buckets)
 
 
 def format_filings(
@@ -153,7 +244,11 @@ def format_filings(
     form_type: str | None,
     company_search: str,
     cik: str,
-) -> str:
+    *,
+    include_index: bool = False,
+    include_summary: bool = True,
+    return_menu: bool = False,
+) -> str | tuple[str, List[FilingMenuEntry]]:
     filings = list(filings)
     if not filings:
         if form_type:
@@ -165,6 +260,7 @@ def format_filings(
             f"No recent filings found for company search '{company_search}' "
             f"(CIK {cik})."
         )
+    menu_entries: List[FilingMenuEntry] = []
     if form_type:
         header = f"Found {len(filings)} {form_type} filings for CIK {cik} (company search: {company_search})."
     else:
@@ -173,9 +269,66 @@ def format_filings(
             f"(company search: {company_search})."
         )
     lines = [header]
-    for filing in filings:
-        lines.append(f"{filing.date} [{filing.form}]: {filing.url}")
-    return "\n".join(lines)
+    for index, filing in enumerate(filings, start=1):
+        prefix = f"{index}. " if include_index else ""
+        descriptor = f" – {filing.description}" if filing.description else ""
+        lines.append(f"{prefix}{filing.date} [{filing.form}]: {filing.url}{descriptor}")
+        if include_index:
+            menu_entries.append(
+                FilingMenuEntry(
+                    index=index,
+                    kind="filing",
+                    filing=filing,
+                )
+            )
+
+    if include_summary:
+        summary_index = len(menu_entries) + 1 if include_index else 1
+        by_type = bucket_filings_by_type(filings)
+        if by_type:
+            lines.append("")
+            lines.append("By type:")
+            for type_index, (current_form, form_filings) in enumerate(
+                sorted(
+                    by_type.items(),
+                    key=lambda item: (item[0], item[1][0].date),
+                    reverse=False,
+                ),
+            ):
+                lines.append(
+                    f"{summary_index}. {current_form}: {len(form_filings)} filing(s) "
+                    f"(most recent {form_filings[0].date})"
+                )
+                if include_index:
+                    menu_entries.append(
+                        FilingMenuEntry(
+                            index=summary_index,
+                            kind="type",
+                            form=current_form,
+                        )
+                    )
+                summary_index += 1
+        by_year = bucket_filings_by_year(filings)
+        if by_year:
+            lines.append("")
+            lines.append("By year:")
+            for year_index, (year, year_filings) in enumerate(
+                sorted(by_year.items(), key=lambda item: item[0], reverse=True),
+            ):
+                lines.append(f"{summary_index}. {year}: {len(year_filings)} filing(s)")
+                if include_index:
+                    menu_entries.append(
+                        FilingMenuEntry(
+                            index=summary_index,
+                            kind="year",
+                            year=year,
+                        )
+                    )
+                summary_index += 1
+    output = "\n".join(lines)
+    if return_menu:
+        return output, menu_entries
+    return output
 
 
 def format_cik_matches(matches: Iterable[CikMatch]) -> str:
@@ -183,9 +336,11 @@ def format_cik_matches(matches: Iterable[CikMatch]) -> str:
     if not matches:
         return "No matching CIKs found."
     lines = ["Matching CIKs:"]
-    for match in matches:
-        lines.append(f"- {match.cik} ({match.ticker}) {match.title}")
-    lines.append("Reply with the desired 10-digit CIK to continue.")
+    for index, match in enumerate(matches, start=1):
+        lines.append(f"{index}. {match.cik} ({match.ticker}) {match.title}")
+    lines.append(
+        "Reply with the numbered option or the desired 10-digit CIK to continue."
+    )
     return "\n".join(lines)
 
 
