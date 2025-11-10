@@ -17,6 +17,7 @@ class Settings:
     environment: str
     aws_region: str
     bedrock_model_id: str
+    bedrock_embedding_model_id: str
     memory_id: str | None
     actor_id: str
     faq_path: Path
@@ -50,6 +51,9 @@ def load_settings() -> Settings:
     bedrock_model_id = os.getenv(
         "BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-sonnet-20240620-v1:0"
     )
+    bedrock_embedding_model_id = os.getenv(
+        "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v1"
+    )
     memory_id = os.getenv("BEDROCK_AGENTCORE_MEMORY_ID")
     actor_id = os.getenv("DEFAULT_ACTOR_ID", "poc-user")
     faq_path = Path(
@@ -71,6 +75,7 @@ def load_settings() -> Settings:
         environment=environment,
         aws_region=aws_region,
         bedrock_model_id=bedrock_model_id,
+        bedrock_embedding_model_id=bedrock_embedding_model_id,
         memory_id=memory_id,
         actor_id=actor_id,
         faq_path=faq_path,

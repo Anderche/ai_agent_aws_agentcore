@@ -16,6 +16,7 @@ jsonpatch==1.33
 jsonpointer==3.0.0
 langchain-aws==1.0.0
 langchain-core==1.0.3
+langchain-text-splitters==1.0.0
 langgraph==1.0.2
 langgraph-checkpoint==3.0.1
 langgraph-prebuilt==1.0.2

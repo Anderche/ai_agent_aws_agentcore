@@ -4,17 +4,35 @@ import logging
 import re
 import uuid
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Sequence, cast
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .config import load_settings
+from .filing_chat import (
+    FilingChatError,
+    FilingChatSession,
+    answer_filing_question,
+    prepare_filing_chat,
+)
 from .graph import build_graph
 from .observability import begin_subsegment, configure_observability, end_subsegment
+from .rag_pipeline import (
+    EmbeddingPipelineError,
+    RagQueryError,
+    query_vectorstore,
+    run_embedding_pipeline,
+)
 from .sec import (
+    CikMatch,
+    FilingMenuEntry,
+    SecDownloadError,
     SecLookupError,
+    SecFiling,
+    download_filing_to_directory,
     format_cik_matches,
     format_filings as format_sec_filings,
     get_recent_filings,
@@ -44,6 +62,12 @@ TICKER_REMINDER_PROMPT = (
 
 _UPPER_SYMBOL_PATTERN = re.compile(r"\b([A-Z]{3,4})\b")
 _ALPHA_SYMBOL_PATTERN = re.compile(r"\b([A-Za-z]{3,4})\b")
+_CHAT_FILING_PATTERN = re.compile(
+    r"\bchat\b.*\bfiling", re.IGNORECASE
+)
+_EXIT_FILING_CHAT_PATTERN = re.compile(
+    r"\b(exit|quit|stop)\b.*\bfiling\b", re.IGNORECASE
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +90,14 @@ def _get_thread_state(thread_id: str) -> Dict[str, Any]:
             "selected_cik": None,
             "filings_shared": False,
             "company_search": None,
+            "filings": [],
+            "awaiting_filing_selection": False,
+            "filing_chat_session": None,
+            "filings_display": [],
+            "filing_menu_entries": [],
+            "latest_download_path": None,
+            "latest_vectorstore_path": None,
+            "rag_active": False,
         },
     )
     return state
@@ -79,6 +111,14 @@ def _reset_thread_state(state: Dict[str, Any]) -> None:
             "selected_cik": None,
             "filings_shared": False,
             "company_search": None,
+            "filings": [],
+            "awaiting_filing_selection": False,
+            "filing_chat_session": None,
+            "filings_display": [],
+            "filing_menu_entries": [],
+            "latest_download_path": None,
+            "latest_vectorstore_path": None,
+            "rag_active": False,
         }
     )
 
@@ -204,6 +244,44 @@ def invoke(payload, context):
     if not prompt:
         return {"response": INTRO_MESSAGE}
 
+    thread_state = _get_thread_state(thread_id)
+
+    vectorstore_path = thread_state.get("latest_vectorstore_path")
+    rag_active = thread_state.get("rag_active")
+
+    if rag_active and vectorstore_path:
+        if _CANCEL_PATTERN.search(prompt):
+            thread_state["rag_active"] = False
+            thread_state["latest_vectorstore_path"] = None
+            return {
+                "response": (
+                    "Exited the filing Q&A workflow. Provide a ticker or new request to continue."
+                )
+            }
+        try:
+            answer = query_vectorstore(
+                Path(vectorstore_path),
+                prompt,
+                settings=settings,
+            )
+        except RagQueryError as exc:
+            thread_state["rag_active"] = False
+            return {
+                "response": (
+                    f"Unable to answer using the embedded filing: {exc}. "
+                    "You can request a new filing to analyze."
+                )
+            }
+        except Exception as exc:  # noqa: BLE001
+            thread_state["rag_active"] = False
+            return {
+                "response": (
+                    f"The filing Q&A workflow hit an unexpected error: {exc}. "
+                    "Please re-run the filing analysis if needed."
+                )
+            }
+        return {"response": answer}
+
     symbol: str | None = None
     if isinstance(payload, dict):
         raw_symbol = payload.get("symbol")
@@ -212,7 +290,6 @@ def invoke(payload, context):
     if not symbol:
         symbol = _extract_symbol_from_text(prompt)
 
-    thread_state = _get_thread_state(thread_id)
     if symbol and symbol != thread_state["symbol"]:
         _reset_thread_state(thread_state)
         thread_state["symbol"] = symbol
@@ -248,20 +325,22 @@ def invoke(payload, context):
             }
 
         selected = _extract_cik_choice(prompt)
+        if not selected:
+            selected = _extract_cik_index(prompt, thread_state["candidates"])
         if not selected and _CONFIRM_PATTERN.search(prompt):
             if len(thread_state["candidates"]) == 1:
                 selected = thread_state["candidates"][0].cik
             else:
                 return {
                     "response": (
-                        "Multiple CIKs matched. Please reply with the 10-digit CIK you want to use."
+                        "Multiple CIKs matched. Reply with the numbered option or the 10-digit CIK you want to use."
                     )
                 }
 
         if not selected:
             return {
                 "response": (
-                    "Reply with the 10-digit CIK you want to use or type 'cancel' to start over."
+                    "Reply with the numbered option or the 10-digit CIK you want to use, or type 'cancel' to start over."
                 )
             }
 
@@ -295,13 +374,383 @@ def invoke(payload, context):
             }
 
         thread_state["filings_shared"] = True
-        formatted = format_sec_filings(
+        thread_state["filings"] = filings
+        thread_state["awaiting_filing_selection"] = True
+        company_context = thread_state["company_search"] or thread_state["symbol"] or ""
+        formatted = _format_and_store_filings(
             filings,
-            None,
-            thread_state["company_search"] or thread_state["symbol"],
+            thread_state,
+            company_context,
             thread_state["selected_cik"],
+            form_type=None,
+            include_summary=True,
         )
-        return {"response": formatted}
+        instruction = _selection_instruction(thread_state)
+        return {
+            "response": (
+                f"{formatted}\n\n{instruction}"
+            )
+        }
+
+    filings_cache: List[SecFiling] = thread_state.get("filings", [])
+
+    if thread_state.get("filing_chat_session"):
+        if _EXIT_FILING_CHAT_PATTERN.search(prompt) or prompt.strip().lower() in {
+            "exit",
+            "quit",
+            "cancel",
+            "done",
+        }:
+            thread_state["filing_chat_session"] = None
+            return {
+                "response": (
+                    "Closed the filing chat session. Let me know if you need anything else."
+                )
+            }
+        if not settings.enable_network_tools:
+            return {
+                "response": (
+                    "Filing chat requires network access. "
+                    "Set ENABLE_NETWORK_TOOLS=true to continue."
+                )
+            }
+        session: FilingChatSession = thread_state["filing_chat_session"]
+        try:
+            answer = answer_filing_question(
+                session,
+                prompt,
+                settings=settings,
+            )
+        except FilingChatError as exc:
+            thread_state["filing_chat_session"] = None
+            return {
+                "response": (
+                    f"Unable to continue the filing chat because {exc}. "
+                    "Start a new filing chat when ready."
+                )
+            }
+        return {"response": answer}
+
+    if thread_state.get("awaiting_filing_selection"):
+        filings_cache, retrieval_error = _ensure_recent_filings(settings, thread_state)
+        if retrieval_error:
+            thread_state["awaiting_filing_selection"] = False
+            return {"response": f"Unable to retrieve filings: {retrieval_error}"}
+
+        if _CANCEL_PATTERN.search(prompt):
+            thread_state["awaiting_filing_selection"] = False
+            return {
+                "response": (
+                    "Cancelled filing chat selection. "
+                    "Ask again if you want to chat with a filing."
+                )
+            }
+
+        menu_entries: List[FilingMenuEntry] = thread_state.get("filing_menu_entries", [])
+        display_filings: List[SecFiling] = thread_state.get("filings_display") or filings_cache
+        company_context = thread_state["company_search"] or thread_state["symbol"] or ""
+        lowered_prompt = prompt.lower()
+
+        if "by type" in lowered_prompt:
+            form_filter = _extract_form_filter(prompt, filings_cache)
+            if not form_filter:
+                available_forms = ", ".join(sorted({filing.form for filing in filings_cache}))
+                return {
+                    "response": (
+                        "Specify the filing form when requesting 'by type'. "
+                        f"Available forms: {available_forms or 'none'}."
+                    )
+                }
+            filtered = [filing for filing in filings_cache if filing.form == form_filter]
+            if not filtered:
+                return {"response": f"No {form_filter} filings found in the recent history."}
+            formatted = _format_and_store_filings(
+                filtered,
+                thread_state,
+                company_context,
+                thread_state["selected_cik"],
+                form_type=form_filter,
+                include_summary=False,
+            )
+            thread_state["awaiting_filing_selection"] = True
+            instruction = _selection_instruction(thread_state)
+            return {"response": f"{formatted}\n\n{instruction}"}
+
+        if "by year" in lowered_prompt:
+            year_filter = _extract_year_filter(prompt, filings_cache)
+            if not year_filter and "unknown" in lowered_prompt:
+                year_filter = "Unknown"
+            if not year_filter:
+                available_years = ", ".join(
+                    sorted(
+                        {filing.date[:4] for filing in filings_cache if filing.date and len(filing.date) >= 4}
+                        | ({"Unknown"} if any(len(filing.date or "") < 4 for filing in filings_cache) else set())
+                    )
+                )
+                return {
+                    "response": (
+                        "Specify the filing year when requesting 'by year'. "
+                        f"Available years: {available_years or 'none'}."
+                    )
+                }
+            if year_filter == "Unknown":
+                filtered = [
+                    filing
+                    for filing in filings_cache
+                    if not (filing.date and len(filing.date) >= 4)
+                ]
+            else:
+                filtered = [
+                    filing
+                    for filing in filings_cache
+                    if filing.date and filing.date.startswith(year_filter)
+                ]
+            if not filtered:
+                return {"response": f"No filings found for the year {year_filter}."}
+            formatted = _format_and_store_filings(
+                filtered,
+                thread_state,
+                company_context,
+                thread_state["selected_cik"],
+                form_type=None,
+                include_summary=False,
+            )
+            thread_state["awaiting_filing_selection"] = True
+            instruction = _selection_instruction(thread_state)
+            return {"response": f"{formatted}\n\n{instruction}"}
+
+        max_menu_index = menu_entries[-1].index if menu_entries else len(display_filings)
+        selection_index = _extract_menu_index(prompt)
+        entry: FilingMenuEntry | None = (
+            _find_menu_entry(menu_entries, selection_index)
+            if selection_index is not None
+            else None
+        )
+        if (
+            entry is None
+            and selection_index is not None
+            and not menu_entries
+            and 1 <= selection_index <= len(display_filings)
+        ):
+            entry = FilingMenuEntry(
+                index=selection_index,
+                kind="filing",
+                filing=display_filings[selection_index - 1],
+            )
+
+        if entry:
+            if entry.kind == "filing":
+                if not settings.enable_network_tools:
+                    thread_state["awaiting_filing_selection"] = False
+                    return {
+                        "response": (
+                            "Downloading filings requires network access. "
+                            "Set ENABLE_NETWORK_TOOLS=true to continue."
+                        )
+                    }
+                selected_filing = entry.filing
+                if selected_filing is None:
+                    thread_state["awaiting_filing_selection"] = False
+                    return {
+                        "response": "The selected filing is no longer available. Start a new filing lookup."
+                    }
+                if "chat" in lowered_prompt:
+                    try:
+                        session = prepare_filing_chat(
+                            selected_filing,
+                            cik=thread_state["selected_cik"],
+                            settings=settings,
+                        )
+                    except FilingChatError as exc:
+                        thread_state["awaiting_filing_selection"] = False
+                        return {"response": f"Unable to prepare filing chat: {exc}"}
+
+                    thread_state["filing_chat_session"] = session
+                    thread_state["awaiting_filing_selection"] = False
+                    return {
+                        "response": (
+                            f"Ready to chat about filing #{entry.index}: {selected_filing.form} "
+                            f"from {selected_filing.date}. Ask a question about this filing "
+                            "or type 'exit filing chat' when finished."
+                        )
+                    }
+
+                try:
+                    download_path = download_filing_to_directory(
+                        selected_filing,
+                        timeout=settings.http_timeout,
+                    )
+                except SecDownloadError as exc:
+                    return {"response": f"Unable to download the filing: {exc}"}
+
+                thread_state["latest_download_path"] = str(download_path)
+
+                try:
+                    artifacts = run_embedding_pipeline(
+                        download_path,
+                        metadata={
+                            "cik": thread_state["selected_cik"],
+                            "form": selected_filing.form,
+                            "filing_date": selected_filing.date,
+                            "source_url": selected_filing.url,
+                        },
+                        settings=settings,
+                    )
+                    thread_state["latest_vectorstore_path"] = str(artifacts.output_path)
+                    thread_state["rag_active"] = True
+                    thread_state["awaiting_filing_selection"] = False
+                    return {"response": "embedding complete. ask query"}
+                except EmbeddingPipelineError as exc:
+                    thread_state["awaiting_filing_selection"] = True
+                    return {
+                        "response": (
+                            f"Downloaded filing #{entry.index} ({selected_filing.form} "
+                            f"from {selected_filing.date}) to {download_path}, "
+                            f"but embedding failed: {exc}"
+                        )
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    thread_state["awaiting_filing_selection"] = True
+                    return {
+                        "response": (
+                            f"Downloaded filing #{entry.index} ({selected_filing.form} "
+                            f"from {selected_filing.date}) to {download_path}, "
+                            f"but embedding hit an unexpected error: {exc}"
+                        )
+                    }
+
+            if entry.kind == "type" and entry.form:
+                filtered = [
+                    filing for filing in filings_cache if filing.form == entry.form
+                ]
+                if not filtered:
+                    return {
+                        "response": f"No {entry.form} filings found in the recent history."
+                    }
+                formatted = _format_and_store_filings(
+                    filtered,
+                    thread_state,
+                    company_context,
+                    thread_state["selected_cik"],
+                    form_type=entry.form,
+                    include_summary=False,
+                )
+                thread_state["awaiting_filing_selection"] = True
+                instruction = _selection_instruction(thread_state)
+                return {"response": f"{formatted}\n\n{instruction}"}
+
+            if entry.kind == "year" and entry.year:
+                if entry.year == "Unknown":
+                    filtered = [
+                        filing
+                        for filing in filings_cache
+                        if not (filing.date and len(filing.date) >= 4)
+                    ]
+                else:
+                    filtered = [
+                        filing
+                        for filing in filings_cache
+                        if filing.date and filing.date.startswith(entry.year)
+                    ]
+                if not filtered:
+                    return {"response": f"No filings found for the year {entry.year}."}
+                formatted = _format_and_store_filings(
+                    filtered,
+                    thread_state,
+                    company_context,
+                    thread_state["selected_cik"],
+                    form_type=None,
+                    include_summary=False,
+                )
+                thread_state["awaiting_filing_selection"] = True
+                instruction = _selection_instruction(thread_state)
+                return {"response": f"{formatted}\n\n{instruction}"}
+
+        if selection_index is not None:
+            return {
+                "response": (
+                    f"Choose a menu number between 1 and {max_menu_index}, or type 'cancel' to stop."
+                )
+            }
+
+    if (
+        thread_state.get("selected_cik")
+        and _wants_filing_chat(prompt)
+    ):
+        filings_cache, retrieval_error = _ensure_recent_filings(settings, thread_state)
+        if retrieval_error:
+            return {"response": f"Unable to retrieve filings: {retrieval_error}"}
+        if not filings_cache:
+            return {
+                "response": (
+                    "No filings are available yet. Provide a valid ticker or CIK first."
+                )
+            }
+        company_context = thread_state["company_search"] or thread_state["symbol"] or ""
+        formatted = _format_and_store_filings(
+            filings_cache,
+            thread_state,
+            company_context,
+            thread_state["selected_cik"],
+            form_type=None,
+            include_summary=False,
+        )
+        thread_state["awaiting_filing_selection"] = True
+        instruction = _selection_instruction(thread_state)
+        return {
+            "response": (
+                f"{formatted}\n\n{instruction}"
+            )
+        }
+
+    if (
+        thread_state.get("selected_cik")
+        and filings_cache
+        and "filing" in prompt.lower()
+    ):
+        form_filter = _extract_form_filter(prompt, filings_cache)
+        if form_filter:
+            filtered = [filing for filing in filings_cache if filing.form == form_filter]
+            if not filtered:
+                return {
+                    "response": f"No {form_filter} filings found in the recent history."
+                }
+            company_context = thread_state["company_search"] or thread_state["symbol"] or ""
+            formatted = _format_and_store_filings(
+                filtered,
+                thread_state,
+                company_context,
+                thread_state["selected_cik"],
+                form_type=form_filter,
+                include_summary=False,
+            )
+            thread_state["awaiting_filing_selection"] = True
+            instruction = _selection_instruction(thread_state)
+            return {"response": f"{formatted}\n\n{instruction}"}
+
+        year_filter = _extract_year_filter(prompt, filings_cache)
+        if year_filter:
+            filtered = [
+                filing
+                for filing in filings_cache
+                if filing.date and filing.date.startswith(year_filter)
+            ]
+            if not filtered:
+                return {
+                    "response": f"No filings found for the year {year_filter}."
+                }
+            company_context = thread_state["company_search"] or thread_state["symbol"] or ""
+            formatted = _format_and_store_filings(
+                filtered,
+                thread_state,
+                company_context,
+                thread_state["selected_cik"],
+                form_type=None,
+                include_summary=False,
+            )
+            thread_state["awaiting_filing_selection"] = True
+            instruction = _selection_instruction(thread_state)
+            return {"response": f"{formatted}\n\n{instruction}"}
 
     if not symbol and thread_state.get("selected_cik"):
         symbol = thread_state["symbol"]
@@ -346,6 +795,134 @@ def invoke(payload, context):
     return {"response": final_message}
 
 
+def _parse_candidate_ciks(response: str) -> list[str]:
+    candidates: list[str] = []
+    for line in response.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            content = stripped[2:]
+        else:
+            match = re.match(r"\d+\.\s+(.*)", stripped)
+            if not match:
+                continue
+            content = match.group(1)
+        first_token = content.split(maxsplit=1)[0]
+        digits = "".join(ch for ch in first_token if ch.isdigit())
+        if len(digits) >= 7:
+            candidates.append(digits.zfill(10))
+    return candidates
+
+
+def _find_menu_entry(
+    menu_entries: Iterable[FilingMenuEntry],
+    index: int,
+) -> FilingMenuEntry | None:
+    for entry in menu_entries:
+        if entry.index == index:
+            return entry
+    return None
+
+
+def _format_and_store_filings(
+    filings: Iterable[SecFiling],
+    thread_state: Dict[str, Any],
+    company_search: str,
+    cik: str,
+    *,
+    form_type: str | None,
+    include_summary: bool,
+) -> str:
+    filings_list = list(filings)
+    formatted_text, menu_entries = cast(
+        tuple[str, List[FilingMenuEntry]],
+        format_sec_filings(
+            filings_list,
+            form_type,
+            company_search,
+            cik,
+            include_index=True,
+            include_summary=include_summary,
+            return_menu=True,
+        ),
+    )
+    thread_state["filings_display"] = filings_list
+    thread_state["filing_menu_entries"] = menu_entries
+    return formatted_text
+
+
+def _selection_instruction(thread_state: Dict[str, Any]) -> str:
+    menu_entries: List[FilingMenuEntry] = thread_state.get("filing_menu_entries", [])
+    if not menu_entries:
+        return "Select a filing number or type 'cancel'."
+    max_index = menu_entries[-1].index
+    if all(entry.kind == "filing" for entry in menu_entries):
+        return f"Select a filing number between 1 and {max_index}, or type 'cancel'."
+    return (
+        f"Select a menu number between 1 and {max_index} to continue "
+        "(filing numbers open the document; type/year entries refine the list), or type 'cancel'."
+    )
+
+
+def _wants_filing_chat(prompt: str) -> bool:
+    return bool(_CHAT_FILING_PATTERN.search(prompt))
+
+
+def _extract_menu_index(text: str) -> Optional[int]:
+    match = re.search(r"\b(\d{1,3})\b", text)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _extract_cik_index(
+    prompt: str,
+    candidates: Sequence[CikMatch],
+) -> Optional[str]:
+    index = _extract_menu_index(prompt)
+    if index is None or not 1 <= index <= len(candidates):
+        return None
+    return candidates[index - 1].cik
+
+
+def _extract_form_filter(prompt: str, filings: Iterable[SecFiling]) -> Optional[str]:
+    lowered = prompt.lower()
+    forms = {filing.form for filing in filings}
+    for form in forms:
+        if form.lower() in lowered:
+            return form
+    return None
+
+
+def _extract_year_filter(prompt: str, filings: Iterable[SecFiling]) -> Optional[str]:
+    years = {filing.date[:4] for filing in filings if filing.date and len(filing.date) >= 4}
+    for year in years:
+        if year and year in prompt:
+            return year
+    return None
+
+
+def _ensure_recent_filings(
+    settings,
+    thread_state: Dict[str, Any],
+) -> tuple[List[SecFiling], Optional[str]]:
+    filings: List[SecFiling] = thread_state.get("filings", [])
+    if filings:
+        return filings, None
+    selected_cik = thread_state.get("selected_cik")
+    if not selected_cik:
+        return [], "A CIK must be selected before fetching filings."
+    try:
+        filings = get_recent_filings(
+            selected_cik,
+            timeout=settings.http_timeout,
+        )
+    except SecLookupError as exc:
+        return [], str(exc)
+    thread_state["filings"] = filings
+    return filings, None
+
+
+
 def run_local_cli() -> None:
     print("AgentCore POC CLI. Type 'exit' to quit.")
     settings = load_settings()
@@ -357,11 +934,38 @@ def run_local_cli() -> None:
     )
     intro = invoke({}, context=context)
     print(f"Agent: {intro['response']}")
+    print("Select enter to proceed with top result.")
     last_symbol: str | None = None
+    awaiting_cik_selection = False
+    awaiting_filing_selection = False
+    candidate_ciks: list[str] = []
+    require_symbol = True
     while True:
-        user_input = input("Company or symbol: ").strip()
+        prompt_label = "Enter response: "
+        if awaiting_cik_selection and candidate_ciks:
+            prompt_label = "Enter response (press Enter for top CIK): "
+        elif awaiting_filing_selection:
+            prompt_label = "Enter response (select filing index): "
+        elif require_symbol:
+            prompt_label = "Enter company or symbol: "
+
+        raw_input = input(prompt_label)
+        user_input = raw_input.strip()
+
+        if (
+            awaiting_cik_selection
+            and not user_input
+            and candidate_ciks
+        ):
+            user_input = candidate_ciks[0]
+
         if user_input.lower() in {"exit", "quit"}:
             break
+
+        if require_symbol and not user_input:
+            print("Please provide a company name or ticker symbol to begin.")
+            continue
+
         payload: Dict[str, Any] = {"prompt": user_input}
         detected_symbol = _extract_symbol_from_text(user_input)
         if detected_symbol:
@@ -370,7 +974,30 @@ def run_local_cli() -> None:
         elif last_symbol:
             payload["symbol"] = last_symbol
         result = invoke(payload, context=context)
-        print(f"Agent: {result['response']}")
+        response_text = result["response"]
+        print(f"Agent: {response_text}")
+        candidate_ciks = _parse_candidate_ciks(response_text)
+        awaiting_cik_selection = bool(
+            candidate_ciks
+            and (
+                "Reply with the desired 10-digit CIK" in response_text
+                or "Reply with the numbered option" in response_text
+            )
+        )
+        awaiting_filing_selection = any(
+            phrase in response_text
+            for phrase in (
+                "Select a filing index",
+                "Select a filing number",
+                "Select a menu number",
+            )
+        )
+        if (
+            "Provide a new ticker symbol" in response_text
+            or "Cancelled CIK selection" in response_text
+        ):
+            last_symbol = None
+        require_symbol = last_symbol is None and not awaiting_cik_selection
 
 
 if __name__ == "__main__":
