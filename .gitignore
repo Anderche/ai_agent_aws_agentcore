@@ -14,5 +14,9 @@ venv/
 # MacOS system files
 .DS_Store
 
+downloads/*
+
 /reference
 /demo_files
+
+

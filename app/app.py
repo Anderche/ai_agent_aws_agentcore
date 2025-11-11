@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Sequence, cast
+from urllib.parse import quote_plus
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -33,6 +34,7 @@ from .sec import (
     FilingMenuEntry,
     SecDownloadError,
     SecLookupError,
+    SecRateLimitError,
     SecFiling,
     download_filing_to_directory,
     format_cik_matches,
@@ -61,6 +63,33 @@ TICKER_REMINDER_PROMPT = (
     "If the user hasn't supplied a specific company or a 3-4 letter stock ticker yet, "
     "help them provide one when necessary to proceed."
 )
+
+
+def _format_possessive(name: str) -> str:
+    cleaned = name.strip()
+    if not cleaned:
+        return "this company's"
+    if cleaned[-1].lower() == "s":
+        return f"{cleaned}'"
+    return f"{cleaned}'s"
+
+
+def _format_sec_rate_limit_message(company_reference: str | None) -> str:
+    display = (company_reference or "this company").strip() or "this company"
+    possessive = _format_possessive(display)
+    search_query = quote_plus(display)
+    edgar_link = f"https://www.sec.gov/edgar/search/#/q={search_query}"
+    return (
+        "I apologize for the continued difficulty. It appears there might be an issue with accessing the SEC database at the moment. "
+        'The error suggests that there are too many requests being made to the SEC website (status 429 typically means "Too Many Requests").\n\n'
+        "Since I'm unable to retrieve the SEC filings directly at this time, I can offer you some alternative options:\n\n"
+        "1. We can try again later when the SEC database might be more accessible.\n"
+        f"2. I can provide you with a direct link to the SEC's EDGAR database where you can search for {possessive} filings yourself.\n"
+        f"   {edgar_link}\n"
+        "3. We can submit a support ticket to report this issue and request assistance.\n\n"
+        f"Which option would you prefer? Or is there another way I can assist you regarding {display}?"
+    )
+
 
 _UPPER_SYMBOL_PATTERN = re.compile(r"\b([A-Z]{3,4})\b")
 _ALPHA_SYMBOL_PATTERN = re.compile(r"\b([A-Za-z]{3,4})\b")
@@ -751,6 +780,9 @@ def invoke(payload, context):
                     download_path = download_filing_to_directory(
                         selected_filing,
                         timeout=settings.http_timeout,
+                        max_size_bytes=int(
+                            settings.sec_max_filing_download_mb * 1024 * 1024
+                        ),
                     )
                 except SecDownloadError as exc:
                     return {"response": f"Unable to download the filing: {exc}"}

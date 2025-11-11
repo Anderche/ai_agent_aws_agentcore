@@ -6,16 +6,20 @@ This proof-of-concept demonstrates how a small internal support team can field f
 - LangGraph stateful agent with Bedrock Claude 3.5 Sonnet.
 - Static FAQ lookup with lightweight fuzzy matching.
 - SEC EDGAR filings lookup tool for company/form queries.
+- Embedded filings explorer backed by the local vectorstore.
+- Browser-based frontend that replaces the CLI for demos.
 - Optional tools for Slack alerts, form-based ticket creation, and document retrieval.
 - Configurable to disable all paid integrations by default.
-- Works locally (CLI) or via AgentCore runtime.
+- Works locally (web UI) or via AgentCore runtime.
 
 ## Project Layout
 - `app/config.py` – runtime settings and environment detection.
 - `app/graph.py` – LangGraph definition and memory integration.
 - `app/tools.py` – tool implementations with cost-safe defaults.
 - `app/app.py` – Bedrock AgentCore app entrypoint.
+- `app/web.py` – Starlette application serving the browser UI and REST APIs.
 - `main.py` – script referenced by `agentcore configure`.
+- `frontend/` – static assets for the proof-of-concept interface.
 - `data/faq.json` – static FAQ data loaded at startup.
 - `data/sec_inquiries/` – local storage for SEC inquiry metadata and attachments.
 - `demo_files/` – legacy demo assets retained for reference.
@@ -73,7 +77,13 @@ Set environment variables in a `.env` file or your shell.
 ## Local Development
 1. Copy `demo_files/faq.json` into `data/faq.json` or edit to match your FAQs.
 2. Export or load environment variables.
-3. Start the CLI runner:
+3. Launch the proof-of-concept frontend:
+   ```bash
+   uvicorn app.web:app --reload --host 0.0.0.0 --port 8000
+   ```
+   Visit `http://localhost:8000` to explore embedded filings and chat with the assistant.
+
+   The legacy CLI runner is still available if you prefer the terminal experience:
    ```bash
    python -m app.app
    ```
@@ -127,6 +137,11 @@ docker run --rm -p 8080:8080 agentcore-faq
 curl -sS -X POST http://localhost:8080/invoke \
   -H "Content-Type: application/json" \
   -d '{"prompt": "What are business hours?"}'
+```
+
+To serve the full web experience from a container, swap the CMD (or override at runtime) with:
+```bash
+uvicorn app.web:app --host 0.0.0.0 --port 8080
 ```
 
 ## Cost Control Tips
