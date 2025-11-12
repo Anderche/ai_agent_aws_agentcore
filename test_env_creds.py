@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
+import logging
 import sys
 import boto3
 from botocore.exceptions import ClientError
+
+logger = logging.getLogger(__name__)
 
 def get_secret(secret_name, region_name="us-east-1"):
     """
@@ -30,7 +33,7 @@ def get_secret(secret_name, region_name="us-east-1"):
         )
     except ClientError as e:
         # See: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
-        print(f"Error getting secret {secret_name}: {e}")
+        logger.error("Error getting secret %s: %s", secret_name, e)
         raise e
 
     # SecretString contains the stored secret; if not, it might be binary
@@ -49,12 +52,13 @@ def main():
     for secret_name in secret_names:
         try:
             secret = get_secret(secret_name, region)
-            print(f"Secret value for '{secret_name}' retrieved successfully.")
-            # For demonstration, print only a summary, not the secret.
+            logger.info("Secret value for '%s' retrieved successfully.", secret_name)
+            # For demonstration, log only a summary, not the secret.
         except Exception as e:
-            print(f"Failed to retrieve secret: {secret_name}")
+            logger.error("Failed to retrieve secret: %s", secret_name)
             sys.exit(1)
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     main()
 

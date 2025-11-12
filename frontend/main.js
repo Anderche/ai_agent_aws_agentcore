@@ -8,6 +8,37 @@ const vectorCount = document.getElementById("vectorstore-count");
 
 let sessionId = null;
 let isSending = false;
+let persistedSymbol = null;
+
+const REFRESH_COMMAND = "/refresh";
+const UPPER_SYMBOL_PATTERN = /\b([A-Z]{3,4})\b/g;
+const ALPHA_SYMBOL_PATTERN = /\b([A-Za-z]{3,4})\b/g;
+
+const normalizeSymbol = (candidate) => {
+  if (!candidate) return null;
+  const normalized = candidate.trim().toUpperCase();
+  return /^[A-Z]{3,4}$/.test(normalized) ? normalized : null;
+};
+
+const extractSymbolFromText = (text) => {
+  if (!text) return null;
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  for (const pattern of [UPPER_SYMBOL_PATTERN, ALPHA_SYMBOL_PATTERN]) {
+    for (const match of trimmed.matchAll(pattern)) {
+      const normalized = normalizeSymbol(match[1]);
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  const fallback = normalizeSymbol(trimmed.replace(/[^A-Za-z]/g, ""));
+  return fallback;
+};
+
+const isRefreshCommand = (value) => value.trim().toLowerCase() === REFRESH_COMMAND;
 
 const createMessageBubble = (text, role) => {
   const bubble = document.createElement("div");
@@ -92,9 +123,15 @@ const setChatBusy = (state) => {
   chatForm.querySelector("button[type='submit']").disabled = state;
 };
 
-const startSession = async () => {
+const startSession = async ({ resetSymbol = true } = {}) => {
+  if (resetSymbol) {
+    persistedSymbol = null;
+  }
+  sessionId = null;
+  chatMessages.innerHTML = "";
   appendMessage("Connecting to AgentCore assistant…", "agent");
   setChatBusy(true);
+  sessionPill.classList.add("hidden");
   try {
     const response = await fetch("/api/session", { method: "POST" });
     if (!response.ok) {
@@ -118,9 +155,21 @@ const startSession = async () => {
   }
 };
 
+const handleRefreshCommand = async () => {
+  if (isSending) return;
+  await startSession({ resetSymbol: true });
+};
+
 const sendChat = async (prompt) => {
   if (!sessionId) {
-    await startSession();
+    await startSession({ resetSymbol: false });
+  }
+
+  if (!persistedSymbol) {
+    const detected = extractSymbolFromText(prompt);
+    if (detected) {
+      persistedSymbol = detected;
+    }
   }
 
   setChatBusy(true);
@@ -132,7 +181,11 @@ const sendChat = async (prompt) => {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, prompt }),
+      body: JSON.stringify({
+        session_id: sessionId,
+        prompt,
+        ...(persistedSymbol ? { symbol: persistedSymbol } : {}),
+      }),
     });
 
     if (!response.ok) {
@@ -298,6 +351,12 @@ chatForm.addEventListener("submit", async (event) => {
   const prompt = chatInput.value.trim();
   if (!prompt) return;
 
+  if (isRefreshCommand(prompt)) {
+    chatInput.value = "";
+    await handleRefreshCommand();
+    return;
+  }
+
   chatInput.value = "";
   await sendChat(prompt);
 });
@@ -319,9 +378,7 @@ chatInput.addEventListener("keydown", (event) => {
 });
 
 restartButton.addEventListener("click", async () => {
-  chatMessages.innerHTML = "";
-  appendMessage("Starting a new assistant session…", "agent");
-  await startSession();
+  await handleRefreshCommand();
 });
 
 window.addEventListener("DOMContentLoaded", async () => {

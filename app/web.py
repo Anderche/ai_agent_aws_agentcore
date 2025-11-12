@@ -20,6 +20,7 @@ from .app import (
     invoke,
 )
 from .config import load_settings
+from .memory import SessionMemory
 from .rag_pipeline import VECTORSTORE_DIR, query_vectorstore
 
 
@@ -42,6 +43,7 @@ def _ensure_context(session_id: SessionId) -> SimpleNamespace:
             session_id=session_id,
             actor_id=settings.actor_id,
             identity={"actor_id": settings.actor_id},
+            memory=SessionMemory(),
         )
         _session_contexts[session_id] = context
     return context
