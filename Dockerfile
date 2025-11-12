@@ -19,5 +19,5 @@ COPY . .
 
 EXPOSE ${PORT}
 
-CMD ["uvicorn", "app.gateway:api", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["sh", "-c", "uvicorn app.web:app --host 0.0.0.0 --port ${PORT:-8080}"]
 
