@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Sequence, cast
+from urllib.parse import quote_plus
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -19,7 +20,8 @@ from .filing_chat import (
     answer_filing_question,
     prepare_filing_chat,
 )
-from .graph import build_graph
+from .graph import build_graph, get_memory_store
+from .memory import SessionMemory
 from .observability import begin_subsegment, configure_observability, end_subsegment
 from .rag_pipeline import (
     EmbeddingPipelineError,
@@ -33,6 +35,7 @@ from .sec import (
     FilingMenuEntry,
     SecDownloadError,
     SecLookupError,
+    SecRateLimitError,
     SecFiling,
     download_filing_to_directory,
     format_cik_matches,
@@ -61,6 +64,33 @@ TICKER_REMINDER_PROMPT = (
     "If the user hasn't supplied a specific company or a 3-4 letter stock ticker yet, "
     "help them provide one when necessary to proceed."
 )
+
+
+def _format_possessive(name: str) -> str:
+    cleaned = name.strip()
+    if not cleaned:
+        return "this company's"
+    if cleaned[-1].lower() == "s":
+        return f"{cleaned}'"
+    return f"{cleaned}'s"
+
+
+def _format_sec_rate_limit_message(company_reference: str | None) -> str:
+    display = (company_reference or "this company").strip() or "this company"
+    possessive = _format_possessive(display)
+    search_query = quote_plus(display)
+    edgar_link = f"https://www.sec.gov/edgar/search/#/q={search_query}"
+    return (
+        "I apologize for the continued difficulty. It appears there might be an issue with accessing the SEC database at the moment. "
+        'The error suggests that there are too many requests being made to the SEC website (status 429 typically means "Too Many Requests").\n\n'
+        "Since I'm unable to retrieve the SEC filings directly at this time, I can offer you some alternative options:\n\n"
+        "1. We can try again later when the SEC database might be more accessible.\n"
+        f"2. I can provide you with a direct link to the SEC's EDGAR database where you can search for {possessive} filings yourself.\n"
+        f"   {edgar_link}\n"
+        "3. We can submit a support ticket to report this issue and request assistance.\n\n"
+        f"Which option would you prefer? Or is there another way I can assist you regarding {display}?"
+    )
+
 
 _UPPER_SYMBOL_PATTERN = re.compile(r"\b([A-Z]{3,4})\b")
 _ALPHA_SYMBOL_PATTERN = re.compile(r"\b([A-Za-z]{3,4})\b")
@@ -136,14 +166,13 @@ def _discover_vectorstore_summaries() -> list[VectorstoreSummary]:
 
 
 def _print_vectorstore_overview(summaries: list[VectorstoreSummary]) -> None:
-    print("Embedded filings available locally:")
+    logger.info("Embedded filings available locally:")
     for index, summary in enumerate(summaries, start=1):
-        print(f"  {index}. {summary.describe()}")
+        logger.info("  %d. %s", index, summary.describe())
         if summary.source_url:
-            print(f"     Source: {summary.source_url}")
-    print(
-        "Options: [1] Query embedded filing   [2] Search SEC EDGAR   "
-        "Type 'exit' to quit."
+            logger.info("     Source: %s", summary.source_url)
+    logger.info(
+        "Options: [1] Query embedded filing   [2] Search SEC EDGAR   Type 'exit' to quit."
     )
 
 
@@ -166,7 +195,7 @@ def _vectorstore_menu(
             if not continue_session:
                 return "exit"
         else:
-            print("Please enter '1', '2', or 'exit'.")
+            logger.info("Please enter '1', '2', or 'exit'.")
 
 
 def _run_vectorstore_query_session(
@@ -174,7 +203,7 @@ def _run_vectorstore_query_session(
     settings,
 ) -> bool:
     if not summaries:
-        print("No embedded filings found to query.")
+        logger.info("No embedded filings found to query.")
         return True
 
     while True:
@@ -202,9 +231,9 @@ def _run_vectorstore_query_session(
                 # result == "select" means pick another filing
                 continue
 
-        print(
-            f"Enter a number between 1 and {len(summaries)}, "
-            "'menu' to return, or 'exit' to quit."
+        logger.info(
+            "Enter a number between 1 and %s, 'menu' to return, or 'exit' to quit.",
+            len(summaries),
         )
 
 
@@ -212,10 +241,10 @@ def _run_vectorstore_question_loop(
     summary: VectorstoreSummary,
     settings,
 ) -> str:
-    print(
-        f"Querying `{summary.label}`. "
-        "Ask a question, or type 'back' for other filings, 'menu' for main options, "
-        "'exit' to quit."
+    logger.info(
+        "Querying `%s`. Ask a question, or type 'back' for other filings, "
+        "'menu' for main options, 'exit' to quit.",
+        summary.label,
     )
 
     while True:
@@ -229,19 +258,18 @@ def _run_vectorstore_question_loop(
         if lowered in {"back", "change"}:
             return "select"
         if not question:
-            print("Please enter a question or one of the commands above.")
+            logger.info("Please enter a question or one of the commands above.")
             continue
 
         try:
             answer = query_vectorstore(summary.path, question, settings=settings)
         except RagQueryError as exc:
-            print(f"Vectorstore error: {exc}")
+            logger.warning("Vectorstore error: %s", exc)
             continue
         except Exception as exc:  # noqa: BLE001
-            print(f"Unexpected vectorstore error: {exc}")
+            logger.exception("Unexpected vectorstore error: %s", exc)
             continue
-
-        print(f"Vectorstore: {answer}")
+        logger.info("Vectorstore: %s", answer)
 
 app = BedrockAgentCoreApp()
 _initial_settings = load_settings()
@@ -396,9 +424,45 @@ def _resolve_actor_from_context(context: Any, fallback: str) -> str:
     return actor_id
 
 
+def _extract_memory_snippet(record: Any) -> str | None:
+    if record is None:
+        return None
+
+    data = record
+    if isinstance(record, dict):
+        if record.get("value") is not None:
+            data = record["value"]
+        elif record.get("record") is not None:
+            data = record["record"]
+    else:
+        value_attr = getattr(record, "value", None)
+        if value_attr is not None:
+            data = value_attr
+
+    if isinstance(data, dict):
+        for key in ("summary", "content", "message", "text"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        for value in data.values():
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    elif isinstance(data, str):
+        stripped = data.strip()
+        if stripped:
+            return stripped
+    return None
+
+
 @app.entrypoint
 def invoke(payload, context):
     settings = load_settings()
+
+    session_memory: SessionMemory | None = getattr(context, "memory", None) if context else None
+    if session_memory is None:
+        session_memory = SessionMemory()
+        if context is not None:
+            setattr(context, "memory", session_memory)
 
     actor_id = _resolve_actor_from_context(context, settings.actor_id)
 
@@ -411,8 +475,12 @@ def invoke(payload, context):
             "actor_id": actor_id,
         }
     }
+    memory_store = get_memory_store()
+    memory_namespace = (actor_id, thread_id) if memory_store else None
 
     prompt = _extract_prompt(payload or {})
+    if session_memory:
+        session_memory.record_goal(prompt)
     if not prompt:
         return {"response": INTRO_MESSAGE}
 
@@ -436,8 +504,16 @@ def invoke(payload, context):
                 prompt,
                 settings=settings,
             )
+            if session_memory:
+                session_memory.record_tool_event(
+                    "query_vectorstore",
+                    "success",
+                    f"path={vectorstore_path}",
+                )
         except RagQueryError as exc:
             thread_state["rag_active"] = False
+            if session_memory:
+                session_memory.record_failure("query_vectorstore", str(exc))
             return {
                 "response": (
                     f"Unable to answer using the embedded filing: {exc}. "
@@ -446,6 +522,8 @@ def invoke(payload, context):
             }
         except Exception as exc:  # noqa: BLE001
             thread_state["rag_active"] = False
+            if session_memory:
+                session_memory.record_failure("query_vectorstore", str(exc))
             return {
                 "response": (
                     f"The filing Q&A workflow hit an unexpected error: {exc}. "
@@ -461,6 +539,22 @@ def invoke(payload, context):
             symbol = _normalize_symbol(raw_symbol)
     if not symbol:
         symbol = _extract_symbol_from_text(prompt)
+
+    if session_memory and symbol:
+        session_memory.set_primary_symbol(symbol)
+
+    retrieved_long_term: list[str] = []
+    if memory_store and memory_namespace and prompt:
+        try:
+            search_results = memory_store.search(memory_namespace, query=prompt, limit=5)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AgentCore Memory search failed: %s", exc)
+            search_results = []
+        for item in search_results:
+            snippet = _extract_memory_snippet(item)
+            if snippet:
+                retrieved_long_term.append(snippet)
+        retrieved_long_term = retrieved_long_term[:3]
 
     if symbol and symbol != thread_state["symbol"]:
         _reset_thread_state(thread_state)
@@ -478,11 +572,19 @@ def invoke(payload, context):
             candidates = list_ciks_for_symbol(symbol, timeout=settings.http_timeout)
         except (ValueError, SecLookupError) as exc:
             _reset_thread_state(thread_state)
+            if session_memory:
+                session_memory.record_failure("list_ciks_for_symbol", str(exc))
             return {
                 "response": f"Unable to resolve a CIK for '{symbol}': {exc}"
             }
 
         thread_state["candidates"] = candidates
+        if session_memory:
+            session_memory.record_tool_event(
+                "list_ciks_for_symbol",
+                "success",
+                f"symbol={symbol} matches={len(candidates)}",
+            )
         return {"response": format_cik_matches(candidates)}
 
     if (
@@ -541,10 +643,18 @@ def invoke(payload, context):
             )
         except SecLookupError as exc:
             _reset_thread_state(thread_state)
+            if session_memory:
+                session_memory.record_failure("get_recent_filings", str(exc))
             return {
                 "response": f"Unable to retrieve filings for CIK {selected}: {exc}"
             }
 
+        if session_memory:
+            session_memory.record_tool_event(
+                "get_recent_filings",
+                "success",
+                f"cik={thread_state['selected_cik']} count={len(filings)}",
+            )
         thread_state["filings_shared"] = True
         thread_state["filings"] = filings
         thread_state["awaiting_filing_selection"] = True
@@ -595,12 +705,20 @@ def invoke(payload, context):
             )
         except FilingChatError as exc:
             thread_state["filing_chat_session"] = None
+            if session_memory:
+                session_memory.record_failure("answer_filing_question", str(exc))
             return {
                 "response": (
                     f"Unable to continue the filing chat because {exc}. "
                     "Start a new filing chat when ready."
                 )
             }
+        if session_memory:
+            session_memory.record_tool_event(
+                "answer_filing_question",
+                "success",
+                f"filing={session.filing.form if session.filing else 'unknown'}",
+            )
         return {"response": answer}
 
     if thread_state.get("awaiting_filing_selection"):
@@ -735,8 +853,16 @@ def invoke(payload, context):
                         )
                     except FilingChatError as exc:
                         thread_state["awaiting_filing_selection"] = False
+                        if session_memory:
+                            session_memory.record_failure("prepare_filing_chat", str(exc))
                         return {"response": f"Unable to prepare filing chat: {exc}"}
 
+                    if session_memory:
+                        session_memory.record_tool_event(
+                            "prepare_filing_chat",
+                            "success",
+                            f"form={selected_filing.form} date={selected_filing.date}",
+                        )
                     thread_state["filing_chat_session"] = session
                     thread_state["awaiting_filing_selection"] = False
                     return {
@@ -751,11 +877,22 @@ def invoke(payload, context):
                     download_path = download_filing_to_directory(
                         selected_filing,
                         timeout=settings.http_timeout,
+                        max_size_bytes=int(
+                            settings.sec_max_filing_download_mb * 1024 * 1024
+                        ),
                     )
                 except SecDownloadError as exc:
+                    if session_memory:
+                        session_memory.record_failure("download_filing_to_directory", str(exc))
                     return {"response": f"Unable to download the filing: {exc}"}
 
                 thread_state["latest_download_path"] = str(download_path)
+                if session_memory:
+                    session_memory.record_tool_event(
+                        "download_filing_to_directory",
+                        "success",
+                        f"path={download_path}",
+                    )
 
                 try:
                     artifacts = run_embedding_pipeline(
@@ -771,9 +908,17 @@ def invoke(payload, context):
                     thread_state["latest_vectorstore_path"] = str(artifacts.output_path)
                     thread_state["rag_active"] = True
                     thread_state["awaiting_filing_selection"] = False
+                    if session_memory:
+                        session_memory.record_tool_event(
+                            "run_embedding_pipeline",
+                            "success",
+                            f"output={artifacts.output_path}",
+                        )
                     return {"response": "embedding complete. ask query"}
                 except EmbeddingPipelineError as exc:
                     thread_state["awaiting_filing_selection"] = True
+                    if session_memory:
+                        session_memory.record_failure("run_embedding_pipeline", str(exc))
                     return {
                         "response": (
                             f"Downloaded filing #{entry.index} ({selected_filing.form} "
@@ -783,6 +928,8 @@ def invoke(payload, context):
                     }
                 except Exception as exc:  # noqa: BLE001
                     thread_state["awaiting_filing_selection"] = True
+                    if session_memory:
+                        session_memory.record_failure("run_embedding_pipeline", str(exc))
                     return {
                         "response": (
                             f"Downloaded filing #{entry.index} ({selected_filing.form} "
@@ -930,10 +1077,36 @@ def invoke(payload, context):
     include_system_messages = thread_id not in _known_threads
     if include_system_messages:
         _known_threads.add(thread_id)
-    messages = list(_collect_system_messages(symbol)) if include_system_messages else []
+    messages = []
+    if include_system_messages:
+        messages.extend(_collect_system_messages(symbol))
+    if session_memory:
+        for memory_prompt in session_memory.render_system_messages():
+            messages.append(SystemMessage(content=memory_prompt))
+    if retrieved_long_term:
+        formatted_snippets = "\n".join(f"- {snippet}" for snippet in retrieved_long_term)
+        messages.append(
+            SystemMessage(
+                content=(
+                    "AgentCore long-term memory highlights to factor into the response:\n"
+                    f"{formatted_snippets}"
+                )
+            )
+        )
     messages.append(HumanMessage(content=prompt))
 
     input_messages = {"messages": messages}
+
+    if memory_store and memory_namespace:
+        try:
+            memory_store.put(
+                memory_namespace,
+                str(uuid.uuid4()),
+                {"type": "human", "content": prompt},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AgentCore Memory put (human) failed: %s", exc)
+
     subsegment = begin_subsegment("agent-graph")
     try:
         response = graph.invoke(input_messages, config=config)
@@ -964,6 +1137,15 @@ def invoke(payload, context):
         end_subsegment(subsegment)
 
     final_message = response["messages"][-1].content
+    if memory_store and memory_namespace and final_message:
+        try:
+            memory_store.put(
+                memory_namespace,
+                str(uuid.uuid4()),
+                {"type": "assistant", "content": final_message},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AgentCore Memory put (assistant) failed: %s", exc)
     return {"response": final_message}
 
 
@@ -1096,7 +1278,7 @@ def _ensure_recent_filings(
 
 
 def run_local_cli() -> None:
-    print("AgentCore POC CLI. Type 'exit' to quit.")
+    logger.info("AgentCore POC CLI. Type 'exit' to quit.")
     settings = load_settings()
     vectorstore_summaries = _discover_vectorstore_summaries()
     menu_result = _vectorstore_menu(vectorstore_summaries, settings)
@@ -1110,8 +1292,8 @@ def run_local_cli() -> None:
         identity={"actor_id": settings.actor_id},
     )
     intro = invoke({}, context=context)
-    print(f"Agent: {intro['response']}")
-    print("Select enter to proceed with top result.")
+    logger.info("Agent: %s", intro["response"])
+    logger.info("Select enter to proceed with top result.")
     last_symbol: str | None = None
     awaiting_cik_selection = False
     awaiting_filing_selection = False
@@ -1140,7 +1322,7 @@ def run_local_cli() -> None:
             break
 
         if require_symbol and not user_input:
-            print("Please provide a company name or ticker symbol to begin.")
+            logger.info("Please provide a company name or ticker symbol to begin.")
             continue
 
         payload: Dict[str, Any] = {"prompt": user_input}
@@ -1152,7 +1334,7 @@ def run_local_cli() -> None:
             payload["symbol"] = last_symbol
         result = invoke(payload, context=context)
         response_text = result["response"]
-        print(f"Agent: {response_text}")
+        logger.info("Agent: %s", response_text)
         candidate_ciks = _parse_candidate_ciks(response_text)
         awaiting_cik_selection = bool(
             candidate_ciks

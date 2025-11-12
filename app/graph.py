@@ -16,6 +16,23 @@ class AgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
 
 
+_MEMORY_STORE = None
+
+
+def _resolve_memory_store(settings):
+    if settings.memory_id:
+        try:
+            from langgraph.checkpoint.aws import AgentCoreMemoryStore
+
+            return AgentCoreMemoryStore(
+                memory_id=settings.memory_id,
+                region_name=settings.aws_region,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
 def _resolve_checkpointer(settings):
     if settings.memory_id:
         try:
@@ -36,6 +53,7 @@ def _resolve_checkpointer(settings):
 def build_graph(settings=None):
     if settings is None:
         settings = load_settings()
+    global _MEMORY_STORE  # noqa: PLW0603
 
     llm = ChatBedrock(
         model_id=settings.bedrock_model_id,
@@ -56,5 +74,11 @@ def build_graph(settings=None):
     graph_builder.add_edge("chatbot", END)
 
     checkpointer = _resolve_checkpointer(settings)
-    return graph_builder.compile(checkpointer=checkpointer)
+    store = _resolve_memory_store(settings)
+    _MEMORY_STORE = store
+    return graph_builder.compile(checkpointer=checkpointer, store=store)
+
+
+def get_memory_store():
+    return _MEMORY_STORE
 

@@ -36,6 +36,7 @@ class Settings:
     sec_inquiry_upload_dir: Path
     sec_inquiry_db_path: Path
     sec_inquiry_max_image_mb: float
+    sec_max_filing_download_mb: float
 
 
 def _resolve_bool(value: str | None, default: bool) -> bool:
@@ -104,5 +105,6 @@ def load_settings() -> Settings:
             )
         ).expanduser(),
         sec_inquiry_max_image_mb=float(os.getenv("SEC_INQUIRY_MAX_IMAGE_MB", "5")),
+        sec_max_filing_download_mb=float(os.getenv("SEC_MAX_FILING_DOWNLOAD_MB", "20")),
     )
 

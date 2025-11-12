@@ -5,7 +5,7 @@ from functools import lru_cache
 from collections import defaultdict
 from pathlib import Path
 import shutil
-from typing import Dict, Iterable, List, Literal, Tuple
+from typing import Dict, Iterable, List, Literal, Mapping, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -22,12 +22,19 @@ class SecDownloadError(Exception):
     """Raised when SEC filings cannot be downloaded."""
 
 
+class SecRateLimitError(SecLookupError):
+    """Raised when SEC returns too many requests."""
+
+
 @dataclass
 class SecFiling:
     date: str
     form: str
     url: str
     description: str | None = None
+    size_bytes: int | None = None
+    accession_number: str | None = None
+    primary_document: str | None = None
 
 
 @dataclass(frozen=True)
@@ -66,11 +73,89 @@ def build_sec_request_headers() -> dict[str, str]:
     return dict(_sec_request_headers())
 
 
+def _format_file_size(size_bytes: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(size_bytes)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{int(size_bytes)} B"
+
+
+def _parse_content_length(headers: Mapping[str, str]) -> int | None:
+    length = headers.get("Content-Length") or headers.get("content-length")
+    if not length:
+        return None
+    try:
+        return int(length)
+    except (TypeError, ValueError):
+        return None
+
+
+def _retrieve_remote_file_size(url: str, timeout: float) -> int | None:
+    headers = dict(_sec_request_headers())
+    headers.setdefault("Accept-Encoding", "identity")
+
+    response = None
+    try:
+        response = requests.head(
+            url,
+            headers=headers,
+            timeout=timeout,
+            allow_redirects=True,
+        )
+    except requests.RequestException:
+        response = None
+
+    if response is not None:
+        try:
+            if response.status_code == 200:
+                length = _parse_content_length(response.headers)
+                if length is not None:
+                    return length
+        finally:
+            response.close()
+
+    try:
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            stream=True,
+        )
+    except requests.RequestException:
+        return None
+
+    try:
+        if response.status_code != 200:
+            return None
+        length = _parse_content_length(response.headers)
+        return length
+    finally:
+        response.close()
+
+
+@lru_cache(maxsize=512)
+def _cached_remote_file_size(url: str, timeout: float) -> int | None:
+    return _retrieve_remote_file_size(url, timeout)
+
+
+def _get_remote_file_size(url: str, *, timeout: float) -> int | None:
+    return _cached_remote_file_size(url, timeout)
+
+
 def _request_json(url: str, timeout: float) -> dict:
     response = requests.get(url, headers=_sec_request_headers(), timeout=timeout)
     if response.status_code == 403:
         raise SecLookupError(
             "SEC returned 403 Forbidden. Set SEC_USER_AGENT with contact info per SEC guidelines."
+        )
+    if response.status_code == 429:
+        raise SecRateLimitError(
+            "SEC returned 429 Too Many Requests. Wait before trying again."
         )
     if response.status_code != 200:
         raise SecLookupError(f"Request failed with status {response.status_code} for {url}.")
@@ -85,6 +170,7 @@ def download_filing_to_directory(
     *,
     timeout: float,
     download_dir: Path | None = None,
+    max_size_bytes: int | None = None,
 ) -> Path:
     """
     Download a SEC filing to the provided directory, ensuring only the new file remains.
@@ -101,11 +187,32 @@ def download_filing_to_directory(
         elif item.is_dir():
             shutil.rmtree(item)
 
-    response = requests.get(filing.url, headers=_sec_request_headers(), timeout=timeout)
+    size_bytes = filing.size_bytes
+    if size_bytes is None:
+        size_bytes = _get_remote_file_size(filing.url, timeout=timeout)
+        filing.size_bytes = size_bytes
+
+    if max_size_bytes is not None and size_bytes is not None and size_bytes > max_size_bytes:
+        raise SecDownloadError(
+            f"Filing {filing.form or ''} dated {filing.date} is "
+            f"{_format_file_size(size_bytes)}, exceeding the download limit of "
+            f"{_format_file_size(max_size_bytes)}."
+        )
+
+    response = requests.get(
+        filing.url,
+        headers=_sec_request_headers(),
+        timeout=timeout,
+        stream=True,
+    )
     if response.status_code == 403:
         raise SecDownloadError(
             "SEC returned 403 Forbidden when downloading the filing. "
             "Ensure SEC_USER_AGENT is set with contact information per SEC guidelines."
+        )
+    if response.status_code == 429:
+        raise SecDownloadError(
+            "SEC returned 429 Too Many Requests while downloading the filing. Try again later."
         )
     if response.status_code != 200:
         raise SecDownloadError(
@@ -116,7 +223,29 @@ def download_filing_to_directory(
     parsed = urlparse(filing.url)
     filename = Path(parsed.path).name or f"{filing.form or 'filing'}.html"
     destination = target_dir / filename
-    destination.write_bytes(response.content)
+    total_downloaded = 0
+    try:
+        with destination.open("wb") as buffer:
+            for chunk in response.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                total_downloaded += len(chunk)
+                if max_size_bytes is not None and total_downloaded > max_size_bytes:
+                    response.close()
+                    buffer.close()
+                    try:
+                        destination.unlink()
+                    except FileNotFoundError:
+                        pass
+                    raise SecDownloadError(
+                        f"Filing download exceeded the limit of {_format_file_size(max_size_bytes)}."
+                    )
+                buffer.write(chunk)
+    finally:
+        response.close()
+
+    filing.size_bytes = total_downloaded or size_bytes
+
     return destination
 
 
@@ -203,12 +332,16 @@ def get_filings(
         report_date = str(report_dates[idx])
         description = descriptions[idx] if idx < len(descriptions) else None
         filing_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{primary_doc}"
+        size_bytes = _get_remote_file_size(filing_url, timeout=timeout)
         matching.append(
             SecFiling(
                 date=report_date or "N/A",
                 form=current_form,
                 url=filing_url,
                 description=str(description) if description else None,
+                size_bytes=size_bytes,
+                accession_number=str(accession_numbers[idx]),
+                primary_document=primary_doc,
             )
         )
         if limit and len(matching) >= limit:
@@ -272,7 +405,10 @@ def format_filings(
     for index, filing in enumerate(filings, start=1):
         prefix = f"{index}. " if include_index else ""
         descriptor = f" – {filing.description}" if filing.description else ""
-        lines.append(f"{prefix}{filing.date} [{filing.form}]: {filing.url}{descriptor}")
+        size_label = (
+            f" ({_format_file_size(filing.size_bytes)})" if filing.size_bytes is not None else ""
+        )
+        lines.append(f"{prefix}{filing.date} [{filing.form}]: {filing.url}{size_label}{descriptor}")
         if include_index:
             menu_entries.append(
                 FilingMenuEntry(
