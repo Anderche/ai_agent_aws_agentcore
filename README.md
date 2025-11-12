@@ -30,7 +30,7 @@ Create a `.env` file or export variables before starting the server:
 - Vectorstore artifacts live in `data/vectorstores/`; they are read on startup when present.
 
 ## Deployment Notes
-- **Railway**: Add `Procfile` and `Railway.toml` (already included) and set `APP_ENV=production` plus required secrets. Railway injects `PORT`; the app binds automatically.
+- **Railway**: Add `Procfile` and `Railway.toml` (already included) and set `APP_ENV=production` plus required secrets. Railway injects `PORT`; the app binds automatically. Production demo lives at <https://aiagentawsagentcore-production.up.railway.app>.
 - **AWS AgentCore**: Package the repo, run `agentcore configure -e main.py`, provide the same environment variables, then `agentcore launch`.
 - **Containers**: `docker build -t agentcore-faq .` followed by any runtime command (e.g., `uvicorn app.web:app --host 0.0.0.0 --port 8080`).
 
