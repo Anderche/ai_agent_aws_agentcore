@@ -79,51 +79,72 @@ def answer_filing_question(
     if not question.strip():
         return "Please provide a question to discuss the filing."
 
-    embeddings_model = BedrockEmbeddings(
-        model_id=settings.bedrock_embedding_model_id,
-        region_name=settings.aws_region,
+    from .cost_guards import (
+        commit_bedrock_reply,
+        release_bedrock_reply,
+        reserve_bedrock_reply,
     )
-    query_embedding = embeddings_model.embed_query(question)
 
-    stored_chunks = _load_chunks(session.session_id, settings)
-    if not stored_chunks:
-        return (
-            "The filing context is no longer available. "
-            "Please restart the filing chat workflow."
+    reply_reserved = reserve_bedrock_reply(settings)
+    try:
+        embeddings_model = BedrockEmbeddings(
+            model_id=settings.bedrock_embedding_model_id,
+            region_name=settings.aws_region,
+        )
+        query_embedding = embeddings_model.embed_query(question)
+
+        stored_chunks = _load_chunks(session.session_id, settings)
+        if not stored_chunks:
+            if reply_reserved:
+                release_bedrock_reply(settings)
+                reply_reserved = False
+            return (
+                "The filing context is no longer available. "
+                "Please restart the filing chat workflow."
+            )
+
+        ranked_chunks = _rank_chunks(query_embedding, stored_chunks)
+        context_snippets = [
+            chunk["text"]
+            for chunk in ranked_chunks[:TOP_K]
+        ]
+        context = "\n\n---\n\n".join(context_snippets)
+
+        if not context:
+            if reply_reserved:
+                release_bedrock_reply(settings)
+                reply_reserved = False
+            return "I could not locate relevant context within the filing for that question."
+
+        llm = ChatBedrock(
+            model_id=settings.bedrock_model_id,
+            region_name=settings.aws_region,
+        )
+        system_prompt = (
+            f"You are assisting with SEC filing chat sessions. "
+            f"Focus on the provided filing context only. "
+            f"The filing is a {session.filing.form} dated {session.filing.date} "
+            f"for CIK {session.cik}. "
+            "If you are unsure, say so explicitly."
+        )
+        user_prompt = (
+            "Use the filing context to answer the user's question.\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {question}"
         )
 
-    ranked_chunks = _rank_chunks(query_embedding, stored_chunks)
-    context_snippets = [
-        chunk["text"]
-        for chunk in ranked_chunks[:TOP_K]
-    ]
-    context = "\n\n---\n\n".join(context_snippets)
-
-    if not context:
-        return "I could not locate relevant context within the filing for that question."
-
-    llm = ChatBedrock(
-        model_id=settings.bedrock_model_id,
-        region_name=settings.aws_region,
-    )
-    system_prompt = (
-        f"You are assisting with SEC filing chat sessions. "
-        f"Focus on the provided filing context only. "
-        f"The filing is a {session.filing.form} dated {session.filing.date} "
-        f"for CIK {session.cik}. "
-        "If you are unsure, say so explicitly."
-    )
-    user_prompt = (
-        "Use the filing context to answer the user's question.\n"
-        f"Context:\n{context}\n\n"
-        f"Question: {question}"
-    )
-
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt),
-    ]
-    response = llm.invoke(messages)
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ]
+        response = llm.invoke(messages)
+    except Exception:
+        if reply_reserved:
+            release_bedrock_reply(settings)
+        raise
+    else:
+        if reply_reserved:
+            commit_bedrock_reply(settings)
     return getattr(response, "content", str(response))
 
 

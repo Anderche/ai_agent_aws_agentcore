@@ -17,6 +17,10 @@ venv/
 
 downloads/*
 
+data/cost_guards.json
+data/cost_guards.lock
+data/cost_guards.json.tmp
+
 /reference
 /demo_files
 

@@ -37,12 +37,27 @@ class Settings:
     sec_inquiry_db_path: Path
     sec_inquiry_max_image_mb: float
     sec_max_filing_download_mb: float
+    max_embedded_filings: int
+    max_filing_chat_prepares: int
+    max_bedrock_replies: int
+    cost_guards_disabled: bool
+    cost_guards_reset: bool
 
 
 def _resolve_bool(value: str | None, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_nonnegative_int(value: str | None, default: int) -> int:
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = int(value.strip())
+    except ValueError:
+        return default
+    return parsed if parsed >= 0 else default
 
 
 @lru_cache(maxsize=1)
@@ -106,5 +121,16 @@ def load_settings() -> Settings:
         ).expanduser(),
         sec_inquiry_max_image_mb=float(os.getenv("SEC_INQUIRY_MAX_IMAGE_MB", "5")),
         sec_max_filing_download_mb=float(os.getenv("SEC_MAX_FILING_DOWNLOAD_MB", "20")),
+        max_embedded_filings=_resolve_nonnegative_int(
+            os.getenv("MAX_EMBEDDED_FILINGS"), 3
+        ),
+        max_filing_chat_prepares=_resolve_nonnegative_int(
+            os.getenv("MAX_FILING_CHAT_PREPARES"), 2
+        ),
+        max_bedrock_replies=_resolve_nonnegative_int(
+            os.getenv("MAX_BEDROCK_REPLIES"), 20
+        ),
+        cost_guards_disabled=_resolve_bool(os.getenv("COST_GUARDS_DISABLED"), False),
+        cost_guards_reset=_resolve_bool(os.getenv("COST_GUARDS_RESET"), False),
     )
 

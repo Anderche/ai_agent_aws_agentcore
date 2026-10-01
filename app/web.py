@@ -20,6 +20,7 @@ from .app import (
     invoke,
 )
 from .config import load_settings
+from .cost_guards import CostGuardBlocked
 from .memory import SessionMemory
 from .rag_pipeline import VECTORSTORE_DIR, query_vectorstore
 
@@ -126,6 +127,8 @@ async def query_vectorstore_route(request: Request) -> JSONResponse:
     settings = load_settings()
     try:
         answer = query_vectorstore(vector_path, question, settings=settings)
+    except CostGuardBlocked as exc:
+        return JSONResponse({"error": str(exc)}, status_code=429)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
     return JSONResponse({"answer": answer})

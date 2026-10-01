@@ -14,6 +14,18 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .config import load_settings
+from .cost_guards import (
+    CostGuardBlocked,
+    apply_startup_reset,
+    commit_bedrock_reply,
+    commit_filing_chat,
+    release_bedrock_reply,
+    release_embedded_filing,
+    release_filing_chat,
+    reserve_bedrock_reply,
+    reserve_embedded_filing,
+    reserve_filing_chat,
+)
 from .filing_chat import (
     FilingChatError,
     FilingChatSession,
@@ -263,6 +275,9 @@ def _run_vectorstore_question_loop(
 
         try:
             answer = query_vectorstore(summary.path, question, settings=settings)
+        except CostGuardBlocked as exc:
+            logger.warning("%s", exc)
+            continue
         except RagQueryError as exc:
             logger.warning("Vectorstore error: %s", exc)
             continue
@@ -273,6 +288,7 @@ def _run_vectorstore_question_loop(
 
 app = BedrockAgentCoreApp()
 _initial_settings = load_settings()
+apply_startup_reset(_initial_settings)
 configure_observability(asdict(_initial_settings))
 graph = build_graph(_initial_settings)
 _known_threads: set[str] = set()
@@ -510,6 +526,8 @@ def invoke(payload, context):
                     "success",
                     f"path={vectorstore_path}",
                 )
+        except CostGuardBlocked as exc:
+            return {"response": str(exc)}
         except RagQueryError as exc:
             thread_state["rag_active"] = False
             if session_memory:
@@ -703,6 +721,8 @@ def invoke(payload, context):
                 prompt,
                 settings=settings,
             )
+        except CostGuardBlocked as exc:
+            return {"response": str(exc)}
         except FilingChatError as exc:
             thread_state["filing_chat_session"] = None
             if session_memory:
@@ -846,16 +866,29 @@ def invoke(payload, context):
                     }
                 if "chat" in lowered_prompt:
                     try:
+                        filing_chat_reserved = reserve_filing_chat(settings)
+                    except CostGuardBlocked as exc:
+                        return {"response": str(exc)}
+                    try:
                         session = prepare_filing_chat(
                             selected_filing,
                             cik=thread_state["selected_cik"],
                             settings=settings,
                         )
                     except FilingChatError as exc:
+                        if filing_chat_reserved:
+                            release_filing_chat(settings)
                         thread_state["awaiting_filing_selection"] = False
                         if session_memory:
                             session_memory.record_failure("prepare_filing_chat", str(exc))
                         return {"response": f"Unable to prepare filing chat: {exc}"}
+                    except Exception:
+                        if filing_chat_reserved:
+                            release_filing_chat(settings)
+                        raise
+                    else:
+                        if filing_chat_reserved:
+                            commit_filing_chat(settings)
 
                     if session_memory:
                         session_memory.record_tool_event(
@@ -895,6 +928,11 @@ def invoke(payload, context):
                     )
 
                 try:
+                    embed_reserved = reserve_embedded_filing(settings)
+                except CostGuardBlocked as exc:
+                    return {"response": str(exc)}
+
+                try:
                     artifacts = run_embedding_pipeline(
                         download_path,
                         metadata={
@@ -914,8 +952,12 @@ def invoke(payload, context):
                             "success",
                             f"output={artifacts.output_path}",
                         )
+                    if embed_reserved:
+                        release_embedded_filing(settings)
                     return {"response": "embedding complete. ask query"}
                 except EmbeddingPipelineError as exc:
+                    if embed_reserved:
+                        release_embedded_filing(settings)
                     thread_state["awaiting_filing_selection"] = True
                     if session_memory:
                         session_memory.record_failure("run_embedding_pipeline", str(exc))
@@ -927,6 +969,8 @@ def invoke(payload, context):
                         )
                     }
                 except Exception as exc:  # noqa: BLE001
+                    if embed_reserved:
+                        release_embedded_filing(settings)
                     thread_state["awaiting_filing_selection"] = True
                     if session_memory:
                         session_memory.record_failure("run_embedding_pipeline", str(exc))
@@ -1107,10 +1151,17 @@ def invoke(payload, context):
         except Exception as exc:  # noqa: BLE001
             logger.warning("AgentCore Memory put (human) failed: %s", exc)
 
+    try:
+        reply_reserved = reserve_bedrock_reply(settings)
+    except CostGuardBlocked as exc:
+        return {"response": str(exc)}
+
     subsegment = begin_subsegment("agent-graph")
     try:
         response = graph.invoke(input_messages, config=config)
     except Exception as exc:  # noqa: BLE001
+        if reply_reserved:
+            release_bedrock_reply(settings)
         logger.exception("Agent invocation failed", exc_info=exc)
         if ClientError and isinstance(exc, ClientError):
             error_code = exc.response.get("Error", {}).get("Code")
@@ -1133,6 +1184,9 @@ def invoke(payload, context):
                 f"Details: {exc}"
             )
         }
+    else:
+        if reply_reserved:
+            commit_bedrock_reply(settings)
     finally:
         end_subsegment(subsegment)
 
