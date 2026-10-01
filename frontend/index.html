@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Inter:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
     <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
@@ -29,7 +29,7 @@
         <div>
           <div class="flex items-center gap-4">
             <span class="brand-mark" aria-hidden="true">C</span>
-            <h1 class="font-display text-2xl font-medium tracking-tight text-white sm:text-3xl md:text-[2.6rem]">Corporate Filing AI Agent</h1>
+            <h1 class="font-display text-3xl text-white sm:text-4xl md:text-[3rem]">Corporate Filing AI Agent</h1>
           </div>
           <div class="title-rule" aria-hidden="true"></div>
           <p class="mt-4 hidden max-w-3xl md:block text-base leading-relaxed text-slate-300">
@@ -63,9 +63,24 @@
             </button>
             <div id="info-panel" class="info-panel" role="dialog" aria-labelledby="info-panel-title" hidden>
               <h2 id="info-panel-title" class="info-panel-title">What this app does</h2>
-              <p>
-                This assistant helps operations and compliance teams explore SEC filings. Search EDGAR by ticker for forms such as 10-K and 10-Q, then ask questions about a filing once it is split into searchable chunks. It also answers from a saved FAQ, remembers the conversation, and can file a support ticket, post to Slack, or open a review request.
-              </p>
+              <ul class="info-list">
+                <li>Finds a company's SEC record (CIK) from its stock ticker.</li>
+                <li>Lists recent EDGAR filings, filterable by form type or year.</li>
+                <li>Prepares a chosen filing so you can ask questions about it.</li>
+                <li>Answers common questions from a saved FAQ.</li>
+                <li>Remembers earlier messages within the current session.</li>
+                <li>Files support tickets, Slack alerts, or review requests when those are configured.</li>
+              </ul>
+              <h2 class="info-panel-title info-panel-title--spaced">What this app does not do</h2>
+              <ul class="info-list">
+                <li>Give financial, legal, or investment advice.</li>
+                <li>Show live stock prices or market data.</li>
+                <li>Cover companies or documents outside the SEC's EDGAR database.</li>
+                <li>Recognize tickers shorter than 3 or longer than 4 letters.</li>
+                <li>Keep conversations after the server restarts.</li>
+                <li>Run without limits; this demo caps replies, prepared filings, and filing chats.</li>
+                <li>Guarantee accuracy; answers can miss or misread details in a filing.</li>
+              </ul>
             </div>
           </div>
           <button id="restart-session" type="button" class="btn-cta whitespace-nowrap">
@@ -74,18 +89,22 @@
         </div>
       </header>
 
-      <main class="mt-6 grid flex-1 min-h-0 gap-6 lg:mt-8 lg:grid-cols-[2fr_1fr] lg:gap-8 lg:overflow-hidden">
-        <section class="panel flex h-[75dvh] min-h-0 flex-col overflow-hidden lg:h-auto rounded-2xl border border-slate-800/70 bg-slate-900/40 lg:order-1">
+      <p class="mt-2 text-xs text-slate-500">
+        Demo purposes only. Not to be misconstrued as financial advice. Designed by Anders Kiss. Codebase is <a href="https://github.com/Anderche/ai_agent_aws_agentcore" target="_blank" rel="noopener noreferrer" class="underline">here</a>.
+      </p>
+
+      <main class="mt-4 grid flex-1 min-h-0 gap-6 lg:mt-5 lg:grid-cols-[2fr_1fr] lg:gap-8 lg:overflow-hidden">
+        <section class="panel flex h-[75dvh] min-h-0 flex-col overflow-hidden lg:h-auto rounded-lg border border-slate-800/70 bg-slate-900/40 lg:order-1">
           <div class="flex items-start justify-between gap-4 border-b border-slate-800/70 px-4 py-4 sm:px-6 sm:py-5">
             <div class="min-w-0">
               <p class="eyebrow">Assistant</p>
-              <h2 class="font-display mt-1 text-2xl font-medium text-white">Conversation Studio</h2>
+              <h2 class="font-display mt-1 text-3xl text-white">Conversation Studio</h2>
               <div id="chat-intro" class="collapsible-body" data-collapsed="true">
                 <p class="mt-1 text-sm text-slate-400">
                   Engage the Bedrock-connected assistant to run SEC lookups, file chats, and FAQ guidance.
                 </p>
                 <p class="mt-2 text-xs text-slate-500">
-                  The assistant keeps your first ticker in focus; type <span class="font-mono text-amber-300">/refresh</span> to reset the session and choose a new context.
+                  The assistant keeps your first ticker in focus; type <span class="font-semibold text-amber-300">/refresh</span> to reset the session and choose a new context.
                 </p>
               </div>
             </div>
@@ -144,7 +163,7 @@
                   autocomplete="off"
                   spellcheck="false"
                   placeholder="Search by name or ticker, e.g. Apple or AAPL"
-                  class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-base text-white sm:text-sm placeholder:text-slate-500 focus:border-amber-400 focus:outline-none focus:ring focus:ring-amber-400/30"
+                  class="mt-2 w-full rounded-md border border-slate-700 bg-slate-950/70 px-3 py-2 text-base text-white sm:text-sm placeholder:text-slate-500 focus:border-amber-400 focus:outline-none focus:ring focus:ring-amber-400/30"
                 />
                 <ul id="company-list" class="company-list scrollbar-thin" role="listbox" aria-label="Companies"></ul>
                 <a
@@ -163,7 +182,7 @@
                   id="chat-input"
                   rows="2"
                   placeholder="Type your question or request..."
-                  class="flex-1 resize-none rounded-xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-base text-white sm:text-sm placeholder:text-slate-500 focus:border-amber-400 focus:outline-none focus:ring focus:ring-amber-400/30"
+                  class="flex-1 resize-none rounded-md border border-slate-700 bg-slate-950/70 px-4 py-3 text-base text-white sm:text-sm placeholder:text-slate-500 focus:border-amber-400 focus:outline-none focus:ring focus:ring-amber-400/30"
                   required
                 ></textarea>
                 <button
@@ -180,11 +199,11 @@
           </div>
         </section>
 
-        <section class="panel flex min-h-0 flex-col gap-4 overflow-hidden rounded-2xl border border-slate-800/70 bg-slate-900/40 p-4 sm:p-6 lg:order-2 lg:gap-6">
+        <section class="panel flex min-h-0 flex-col gap-4 overflow-hidden rounded-lg border border-slate-800/70 bg-slate-900/40 p-4 sm:p-6 lg:order-2 lg:gap-6">
           <div class="flex items-start justify-between gap-4">
             <div class="min-w-0">
               <p class="eyebrow">Library</p>
-              <h2 class="font-display mt-1 text-2xl font-medium text-white">Embedded Filings</h2>
+              <h2 class="font-display mt-1 text-3xl text-white">Embedded Filings</h2>
             </div>
             <div class="flex shrink-0 items-center gap-2">
               <span id="vectorstore-count" class="empty:hidden rounded-full bg-slate-800 px-3 py-1 text-xs font-medium text-slate-300"></span>
@@ -207,20 +226,13 @@
               Ask targeted questions against locally embedded filings without invoking Bedrock.
             </p>
             <div id="vectorstore-list" class="flex max-h-[60dvh] flex-1 flex-col gap-4 overflow-y-auto pr-2 lg:max-h-none">
-              <div class="flex items-center justify-center rounded-xl border border-dashed border-slate-700/70 bg-slate-900/30 p-8 text-center text-sm text-slate-400">
+              <div class="flex items-center justify-center rounded-md border border-dashed border-slate-700/70 bg-slate-900/30 p-8 text-center text-sm text-slate-400">
                 Loading embedded filings…
               </div>
             </div>
           </div>
         </section>
       </main>
-
-      <footer class="mt-8 flex lg:mt-10 flex-col gap-2 border-t border-slate-800/70 pt-6 text-sm text-slate-500 md:flex-row md:items-center md:justify-between">
-        <p>
-          Demo purposes only. Not to be misconstrued as financial advice. Codebase is <a href="https://github.com/Anderche/ai_agent_aws_agentcore" target="_blank" rel="noopener noreferrer" class="underline hover:text-amber-400">here</a>.
-        </p>
-        <p class="font-display italic">Designed by Anders Kiss</p>
-      </footer>
     </div>
     <script type="module" src="main.js"></script>
   </body>

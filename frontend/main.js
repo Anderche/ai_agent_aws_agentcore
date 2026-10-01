@@ -233,7 +233,7 @@ const renderVectorstores = (items) => {
   vectorList.innerHTML = "";
   if (!items.length) {
     vectorList.innerHTML =
-      '<div class="rounded-xl border border-dashed border-slate-700/70 bg-slate-900/30 p-8 text-center text-sm text-slate-400">No embedded filings were found. Run the embedding pipeline to populate vectorstores.</div>';
+      '<div class="rounded-md border border-dashed border-slate-700/70 bg-slate-900/30 p-8 text-center text-sm text-slate-400">No embedded filings were found. Run the embedding pipeline to populate vectorstores.</div>';
     vectorCount.textContent = "0 available";
     return;
   }
@@ -243,7 +243,7 @@ const renderVectorstores = (items) => {
   items.forEach((item) => {
     const card = document.createElement("article");
     card.className =
-      "filing-card space-y-4 rounded-xl border border-slate-800/60 bg-slate-950/60 p-5";
+      "filing-card space-y-4 rounded-md border border-slate-800/60 bg-slate-950/60 p-5";
     const filingsMeta = [
       item.form ? `Form ${item.form}` : null,
       item.filing_date ? `Filed ${item.filing_date}` : null,
@@ -256,7 +256,7 @@ const renderVectorstores = (items) => {
       <div class="flex flex-col gap-2">
         <div class="flex items-start justify-between gap-3">
           <div>
-            <h3 class="font-display text-lg font-medium text-white">${item.label}</h3>
+            <h3 class="font-display text-xl text-white">${item.label}</h3>
             <p class="text-sm text-slate-400">${filingsMeta || "Metadata not available"}</p>
           </div>
           ${
@@ -277,7 +277,7 @@ const renderVectorstores = (items) => {
             type="text"
             name="question"
             placeholder="What do we need to know from this filing?"
-            class="flex-1 rounded-xl border border-slate-700 bg-slate-950/70 px-4 py-2 text-sm text-white placeholder:text-slate-500 focus:border-amber-400 focus:outline-none focus:ring focus:ring-amber-400/30"
+            class="flex-1 rounded-md border border-slate-700 bg-slate-950/70 px-4 py-2 text-sm text-white placeholder:text-slate-500 focus:border-amber-400 focus:outline-none focus:ring focus:ring-amber-400/30"
             required
           />
           <button
@@ -374,7 +374,7 @@ const loadVectorstores = async () => {
     console.error(error);
     vectorCount.textContent = "";
     vectorList.innerHTML =
-      '<div class="rounded-xl border border-red-500/30 bg-red-500/10 p-6 text-sm text-red-200">Failed to load embedded filings. Confirm the server can access the vectorstore directory.</div>';
+      '<div class="rounded-md border border-red-500/30 bg-red-500/10 p-6 text-sm text-red-200">Failed to load embedded filings. Confirm the server can access the vectorstore directory.</div>';
   }
 };
 
