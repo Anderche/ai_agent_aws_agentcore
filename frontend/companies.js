@@ -1,7 +1,18 @@
-// Demo list only. Tickers are limited to 3-4 letters because that is the
-// format the chat assistant recognizes as a stock symbol.
+// Demo list. Tickers are 1-5 letters, matching the format the chat assistant recognizes.
 const COMPANY_ROWS = [
   ["Abbott Laboratories", "ABT"],
+  ["AT&T", "T"],
+  ["Boeing", "BA"],
+  ["Citigroup", "C"],
+  ["Coca-Cola", "KO"],
+  ["Ford Motor", "F"],
+  ["General Electric", "GE"],
+  ["General Motors", "GM"],
+  ["Mastercard", "MA"],
+  ["Micron Technology", "MU"],
+  ["Procter & Gamble", "PG"],
+  ["Verizon", "VZ"],
+  ["Visa", "V"],
   ["AbbVie", "ABBV"],
   ["Accenture", "ACN"],
   ["Adobe", "ADBE"],

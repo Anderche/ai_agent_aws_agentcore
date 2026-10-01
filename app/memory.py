@@ -71,14 +71,17 @@ class SessionMemory:
         detail = _truncate(detail)
         self._failure_events.append(FailureEvent(name=name.strip(), detail=detail))
 
+    @property
+    def primary_symbol(self) -> Optional[str]:
+        return self._primary_symbol
+
     def set_primary_symbol(self, symbol: Optional[str]) -> None:
         if not symbol:
             return
         upper = symbol.strip().upper()
         if not upper:
             return
-        if self._primary_symbol is None:
-            self._primary_symbol = upper
+        self._primary_symbol = upper
 
     def _format_tool_history(self) -> Optional[str]:
         if not self._tool_events:

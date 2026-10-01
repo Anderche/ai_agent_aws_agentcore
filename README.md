@@ -18,10 +18,11 @@ Find and query filings from publically traded companies sourced from the SEC's E
 You talk to it in a browser or a terminal. A small web server (Starlette) serves both.
 
 ## Quick Start
+Requires [uv](https://docs.astral.sh/uv/). Then:
 ```bash
-python -m venv .venv
+uv venv
 source .venv/bin/activate
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 uvicorn app.web:app --host 0.0.0.0 --port 8000
 ```
 Open `http://localhost:8000` for the web UI or run `python -m app.app` for the terminal CLI.
