@@ -1,9 +1,7 @@
-# AgentCore + LangGraph FAQ POC
+# AI Agent for Corporate Filings
 
-Compact README for the internal proof-of-concept. Keep credentials and identifiers in private channels only.
-
-## Overview
-A chat assistant for operations and compliance teams. It remembers the conversation, looks things up, and can take a few actions. It runs on Amazon Bedrock (AWS's hosted AI models) through AgentCore (AWS's runtime for this kind of agent).
+## AI Agent Overview
+Find and query filings from publically traded companies sourced from the SEC's Edgar database. This app is a chat assistant for operations and compliance teams, built with AgentCore and LangGraph. It remembers the conversation, looks things up, and can take a few actions. It runs on Amazon Bedrock (AWS's hosted AI models) using AgentCore (AWS's runtime for this kind of agent).
 
 **What it can look up**
 - `query_faq` — answers from a saved FAQ file, like a searchable help desk.

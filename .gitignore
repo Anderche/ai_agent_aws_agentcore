@@ -8,6 +8,7 @@ __pycache__/
 env/
 venv/
 .env
+reference/
 
 # VSCode settings folder
 .vscode/
