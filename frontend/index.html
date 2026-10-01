@@ -113,7 +113,50 @@
                 Initializing assistant…
               </div>
             </div>
-            <form id="chat-form" class="border-t border-slate-800/70 bg-slate-900/60 p-3 sm:p-4">
+            <form id="chat-form" class="relative border-t border-slate-800/70 bg-slate-900/60 p-3 sm:p-4">
+              <div class="mb-2 flex items-center">
+                <button
+                  id="company-picker-toggle"
+                  type="button"
+                  class="company-picker-toggle"
+                  aria-expanded="false"
+                  aria-controls="company-picker"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="h-4 w-4" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+                  </svg>
+                  Browse companies
+                </button>
+              </div>
+              <div id="company-picker" class="company-picker" role="dialog" aria-labelledby="company-picker-title" hidden>
+                <div class="flex items-baseline justify-between gap-3">
+                  <h3 id="company-picker-title" class="info-panel-title">Find a company</h3>
+                  <span id="company-picker-count" class="text-xs text-slate-500"></span>
+                </div>
+                <label for="company-search" class="sr-only">Search by company name or ticker</label>
+                <input
+                  id="company-search"
+                  type="text"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-expanded="true"
+                  aria-controls="company-list"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="Search by name or ticker, e.g. Apple or AAPL"
+                  class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-base text-white sm:text-sm placeholder:text-slate-500 focus:border-amber-400 focus:outline-none focus:ring focus:ring-amber-400/30"
+                />
+                <ul id="company-list" class="company-list scrollbar-thin" role="listbox" aria-label="Companies"></ul>
+                <a
+                  href="https://www.sec.gov/edgar/searchedgar/companysearch"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="company-picker-help"
+                >
+                  I cannot find a company stock symbol
+                  <span class="text-slate-500">Search SEC EDGAR <span aria-hidden="true">↗</span></span>
+                </a>
+              </div>
               <label for="chat-input" class="sr-only">Ask the assistant</label>
               <div class="flex items-end gap-3">
                 <textarea
