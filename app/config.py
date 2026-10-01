@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from functools import lru_cache
@@ -10,6 +11,8 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,15 @@ class Settings:
     max_bedrock_replies: int
     cost_guards_disabled: bool
     cost_guards_reset: bool
+    cors_allowed_origins: tuple[str, ...]
+    reference_s3_allowlist: tuple[str, ...]
+    filing_vector_table_name: str
+
+
+def _resolve_list(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 def _resolve_bool(value: str | None, default: bool) -> bool:
@@ -87,6 +99,16 @@ def load_settings() -> Settings:
         "OBSERVABILITY_SERVICE_NAME", "agentcore-faq-agent"
     )
     enable_xray = _resolve_bool(os.getenv("ENABLE_XRAY"), False)
+
+    cost_guards_disabled = _resolve_bool(os.getenv("COST_GUARDS_DISABLED"), False)
+    cost_guards_reset = _resolve_bool(os.getenv("COST_GUARDS_RESET"), False)
+    if environment == "production" and (cost_guards_disabled or cost_guards_reset):
+        logger.warning(
+            "COST_GUARDS_DISABLED / COST_GUARDS_RESET are ignored when APP_ENV=production."
+        )
+        cost_guards_disabled = False
+        cost_guards_reset = False
+
     return Settings(
         environment=environment,
         aws_region=aws_region,
@@ -130,7 +152,12 @@ def load_settings() -> Settings:
         max_bedrock_replies=_resolve_nonnegative_int(
             os.getenv("MAX_BEDROCK_REPLIES"), 20
         ),
-        cost_guards_disabled=_resolve_bool(os.getenv("COST_GUARDS_DISABLED"), False),
-        cost_guards_reset=_resolve_bool(os.getenv("COST_GUARDS_RESET"), False),
+        cost_guards_disabled=cost_guards_disabled,
+        cost_guards_reset=cost_guards_reset,
+        cors_allowed_origins=_resolve_list(os.getenv("CORS_ALLOWED_ORIGINS")),
+        reference_s3_allowlist=_resolve_list(os.getenv("REFERENCE_S3_ALLOWLIST")),
+        filing_vector_table_name=os.getenv(
+            "FILING_VECTOR_TABLE_NAME", "agentcore_filing_vectors"
+        ),
     )
 

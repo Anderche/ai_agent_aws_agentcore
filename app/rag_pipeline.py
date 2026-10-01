@@ -52,7 +52,7 @@ def _load_text(state: EmbeddingState) -> EmbeddingState:
     try:
         raw_text = file_path.read_text(encoding="utf-8", errors="ignore")
     except OSError as exc:
-        raise EmbeddingPipelineError(f"Unable to read {file_path}: {exc}") from exc
+        raise EmbeddingPipelineError(f"Unable to read {file_path.name}.") from exc
     cleaned = _strip_html(raw_text)
     return {"raw_text": raw_text, "cleaned_text": cleaned}
 
@@ -162,7 +162,7 @@ def run_embedding_pipeline(
     settings: Settings,
 ) -> EmbeddingArtifacts:
     if not file_path.exists():
-        raise EmbeddingPipelineError(f"File not found: {file_path}")
+        raise EmbeddingPipelineError(f"File not found: {file_path.name}")
 
     graph = build_embedding_graph(settings)
     initial_state: EmbeddingState = {
@@ -183,7 +183,7 @@ class RagQueryError(Exception):
 
 def _load_vector_records(path: Path) -> List[dict]:
     if not path.exists():
-        raise RagQueryError(f"Vector store not found at {path}")
+        raise RagQueryError(f"Vector store {path.name} was not found")
     records: List[dict] = []
     try:
         with path.open("r", encoding="utf-8") as handle:
@@ -198,9 +198,9 @@ def _load_vector_records(path: Path) -> List[dict]:
                 record["embedding"] = [float(value) for value in embedding]
                 records.append(record)
     except (OSError, json.JSONDecodeError) as exc:
-        raise RagQueryError(f"Unable to load vector store {path}: {exc}") from exc
+        raise RagQueryError(f"Unable to load vector store {path.name}") from exc
     if not records:
-        raise RagQueryError(f"Vector store {path} is empty.")
+        raise RagQueryError(f"Vector store {path.name} is empty.")
     return records
 
 

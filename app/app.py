@@ -540,11 +540,12 @@ def invoke(payload, context):
             }
         except Exception as exc:  # noqa: BLE001
             thread_state["rag_active"] = False
+            logger.exception("query_vectorstore failed")
             if session_memory:
                 session_memory.record_failure("query_vectorstore", str(exc))
             return {
                 "response": (
-                    f"The filing Q&A workflow hit an unexpected error: {exc}. "
+                    "The filing Q&A workflow hit an unexpected error. "
                     "Please re-run the filing analysis if needed."
                 )
             }
@@ -582,7 +583,7 @@ def invoke(payload, context):
         if not settings.enable_network_tools:
             return {
                 "response": (
-                    "SEC lookups are disabled. Set ENABLE_NETWORK_TOOLS=true to retrieve CIK data."
+                    "SEC lookups are disabled on this deployment, so CIK data is unavailable."
                 )
             }
 
@@ -650,7 +651,7 @@ def invoke(payload, context):
         if not settings.enable_network_tools:
             return {
                 "response": (
-                    "SEC lookups are disabled. Set ENABLE_NETWORK_TOOLS=true to retrieve filings."
+                    "SEC lookups are disabled on this deployment, so filings are unavailable."
                 )
             }
 
@@ -710,8 +711,7 @@ def invoke(payload, context):
         if not settings.enable_network_tools:
             return {
                 "response": (
-                    "Filing chat requires network access. "
-                    "Set ENABLE_NETWORK_TOOLS=true to continue."
+                    "Filing chat requires network access, which is disabled on this deployment."
                 )
             }
         session: FilingChatSession = thread_state["filing_chat_session"]
@@ -854,8 +854,8 @@ def invoke(payload, context):
                     thread_state["awaiting_filing_selection"] = False
                     return {
                         "response": (
-                            "Downloading filings requires network access. "
-                            "Set ENABLE_NETWORK_TOOLS=true to continue."
+                            "Downloading filings requires network access, which is disabled "
+                            "on this deployment."
                         )
                     }
                 selected_filing = entry.filing
@@ -964,21 +964,20 @@ def invoke(payload, context):
                     return {
                         "response": (
                             f"Downloaded filing #{entry.index} ({selected_filing.form} "
-                            f"from {selected_filing.date}) to {download_path}, "
-                            f"but embedding failed: {exc}"
+                            f"from {selected_filing.date}), but embedding failed: {exc}"
                         )
                     }
                 except Exception as exc:  # noqa: BLE001
                     if embed_reserved:
                         release_embedded_filing(settings)
                     thread_state["awaiting_filing_selection"] = True
+                    logger.exception("run_embedding_pipeline failed")
                     if session_memory:
                         session_memory.record_failure("run_embedding_pipeline", str(exc))
                     return {
                         "response": (
                             f"Downloaded filing #{entry.index} ({selected_filing.form} "
-                            f"from {selected_filing.date}) to {download_path}, "
-                            f"but embedding hit an unexpected error: {exc}"
+                            f"from {selected_filing.date}), but embedding hit an unexpected error."
                         )
                     }
 
@@ -1173,15 +1172,14 @@ def invoke(payload, context):
         ):
             return {
                 "response": (
-                    "I can't access the configured Bedrock model yet. "
-                    "Please confirm your AWS credentials allow bedrock:InvokeModel for the selected "
-                    "model or switch to credentials with Bedrock access, then try again."
+                    "The assistant model is not available on this deployment right now. "
+                    "Please try again later."
                 )
             }
         return {
             "response": (
-                "The agent hit an unexpected runtime error while contacting Bedrock. "
-                f"Details: {exc}"
+                "The assistant hit an unexpected error while generating a reply. "
+                "Please try again."
             )
         }
     else:
