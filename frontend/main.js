@@ -448,6 +448,16 @@ if (infoToggle && infoPanel) {
   });
 }
 
+document.querySelectorAll("[data-collapse-target]").forEach((toggle) => {
+  const target = document.getElementById(toggle.dataset.collapseTarget);
+  if (!target) return;
+  toggle.addEventListener("click", () => {
+    const open = toggle.getAttribute("aria-expanded") !== "true";
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    target.dataset.collapsed = open ? "false" : "true";
+  });
+});
+
 window.addEventListener("DOMContentLoaded", async () => {
   await Promise.all([startSession(), loadVectorstores()]);
 });
