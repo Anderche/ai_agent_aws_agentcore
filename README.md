@@ -3,9 +3,7 @@
 Compact README for the internal proof-of-concept. Keep credentials and identifiers in private channels only.
 
 ## Overview
-- Stateful LangGraph agent that uses Amazon Bedrock through AWS AgentCore.
-- FAQ retrieval, SEC filing lookup, and optional document chat over embedded vector stores.
-- Starlette backend with a lightweight static frontend shipped in `frontend/`.
+This proof-of-concept is a stateful LangGraph assistant for operations and compliance teams, running on Amazon Bedrock through AWS AgentCore. Agent skills include `query_faq`, `lookup_sec_filings` by company ticker, form type, and year, plus optional filing chat over embedded filing vector stores. Capabilities span session memory, `submit_ticket`, `send_slack_notification`, `initiate_sec_inquiry` with Google Form prefill, and `download_reference_document` from local files, HTTP, or S3. A Starlette backend serves the static web UI and terminal CLI.
 
 ## Quick Start
 ```bash
