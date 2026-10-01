@@ -256,6 +256,10 @@ class CikMatch:
     cik: str
 
 
+_TITLE_MATCH_LIMIT = 20
+_TITLE_SUBSTRING_MIN_LENGTH = 4
+
+
 def list_ciks_for_symbol(symbol: str, *, timeout: float) -> List[CikMatch]:
     normalized = symbol.strip().lower()
     if not normalized:
@@ -263,6 +267,7 @@ def list_ciks_for_symbol(symbol: str, *, timeout: float) -> List[CikMatch]:
 
     data = _request_json(SEC_COMPANY_TICKERS_URL, timeout=timeout)
     matches: List[CikMatch] = []
+    allow_title_substring = len(normalized) >= _TITLE_SUBSTRING_MIN_LENGTH
 
     for entry in data.values():
         ticker = str(entry.get("ticker", "")).lower()
@@ -273,16 +278,15 @@ def list_ciks_for_symbol(symbol: str, *, timeout: float) -> List[CikMatch]:
             continue
 
         if normalized == ticker:
-            matches.append(
+            return [
                 CikMatch(
                     ticker=ticker.upper(),
                     title=title,
                     cik=str(cik).zfill(10),
                 )
-            )
-            break
+            ]
 
-        if normalized in title.lower():
+        if allow_title_substring and normalized in title.lower():
             matches.append(
                 CikMatch(
                     ticker=ticker.upper(),
@@ -290,6 +294,8 @@ def list_ciks_for_symbol(symbol: str, *, timeout: float) -> List[CikMatch]:
                     cik=str(cik).zfill(10),
                 )
             )
+            if len(matches) >= _TITLE_MATCH_LIMIT:
+                break
 
     if not matches:
         raise SecLookupError(f"Company or ticker not found for search: {symbol}.")

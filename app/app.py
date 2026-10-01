@@ -64,16 +64,18 @@ except Exception:  # noqa: BLE001
 INTRO_MESSAGE = (
     "Welcome to the AgentCore proof-of-concept assistant. I help operations and compliance "
     "teams retrieve FAQ answers, review SEC filings, and capture inquiry details. "
-    "To get started, share the company name or a 3-4 letter stock ticker symbol you're focused on."
+    "To get started, share the company name or a 1-5 letter stock ticker symbol you're focused on."
 )
 
 BASE_SYSTEM_PROMPT = (
     "You are the AgentCore proof-of-concept assistant supporting operations and compliance teams. "
-    "Provide clear, tactical guidance, use tools when appropriate, and keep responses concise."
+    "Provide clear, tactical guidance, use tools when appropriate, and keep responses concise. "
+    "When you list next actions or choices, number them 1. 2. 3. so the user can reply with a single integer. "
+    "Never treat the word SEC as a company ticker; use the user's previously provided ticker when looking up filings."
 )
 
 TICKER_REMINDER_PROMPT = (
-    "If the user hasn't supplied a specific company or a 3-4 letter stock ticker yet, "
+    "If the user hasn't supplied a specific company or a 1-5 letter stock ticker yet, "
     "help them provide one when necessary to proceed."
 )
 
@@ -104,14 +106,28 @@ def _format_sec_rate_limit_message(company_reference: str | None) -> str:
     )
 
 
-_UPPER_SYMBOL_PATTERN = re.compile(r"\b([A-Z]{3,4})\b")
-_ALPHA_SYMBOL_PATTERN = re.compile(r"\b([A-Za-z]{3,4})\b")
+_UPPER_SYMBOL_PATTERN = re.compile(r"\b([A-Z]{2,5})\b")
+_ALPHA_SYMBOL_PATTERN = re.compile(r"\b([A-Za-z]{2,5})\b")
+_MENU_INTEGER_PATTERN = re.compile(r"^\s*\d{1,3}\.?\s*$")
+_FILINGS_ACTION_PATTERN = re.compile(
+    r"(look\s+up\s+(?:sec\s+)?filings?|(?:look\s+up\s+)?sec\s+filings?)",
+    re.IGNORECASE,
+)
 _CHAT_FILING_PATTERN = re.compile(
     r"\bchat\b.*\bfiling", re.IGNORECASE
 )
 _EXIT_FILING_CHAT_PATTERN = re.compile(
     r"\b(exit|quit|stop)\b.*\bfiling\b", re.IGNORECASE
 )
+_SYMBOL_STOPWORDS = {
+    "A", "AM", "AN", "AND", "ARE", "AS", "AT", "BE", "BY", "CAN", "CHAT",
+    "DO", "FAQ", "FILE", "FOR", "FORM", "FROM", "GO", "HAVE", "HE", "HELP",
+    "HI", "HTTP", "HTTPS", "HTML", "IF", "IN", "INC", "INTO", "IS", "IT",
+    "JSON", "JUST", "LOOK", "LTD", "ME", "MORE", "MY", "NEED", "NEW", "NO",
+    "NOT", "OF", "OK", "OLD", "ON", "OR", "OVER", "SEC", "SO", "THAN",
+    "THAT", "THE", "THIS", "TO", "TYPE", "UP", "US", "WANT", "WE", "WHAT",
+    "WHEN", "WILL", "WITH", "YES", "YOU", "YOUR", "ALL", "CORP",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -363,14 +379,33 @@ def _normalize_symbol(candidate: str | None) -> str | None:
     if not candidate:
         return None
     symbol = candidate.strip().upper()
-    if 3 <= len(symbol) <= 4 and symbol.isalpha():
-        return symbol
-    return None
+    if not symbol.isalpha() or not 1 <= len(symbol) <= 5:
+        return None
+    if symbol in _SYMBOL_STOPWORDS:
+        return None
+    return symbol
+
+
+def _is_menu_integer(text: str) -> bool:
+    return bool(text and _MENU_INTEGER_PATTERN.match(text))
+
+
+def _is_filings_action(text: str) -> bool:
+    return bool(text and _FILINGS_ACTION_PATTERN.search(text))
 
 
 def _extract_symbol_from_text(text: str) -> str | None:
     if not text:
         return None
+    if _is_menu_integer(text):
+        return None
+
+    stripped = text.strip()
+    letters_only = re.sub(r"[^A-Za-z]", "", stripped)
+    if letters_only.upper() == stripped.replace(" ", "").upper() or stripped.upper() == letters_only.upper():
+        whole = _normalize_symbol(letters_only)
+        if whole:
+            return whole
 
     for pattern in (_UPPER_SYMBOL_PATTERN, _ALPHA_SYMBOL_PATTERN):
         for match in pattern.findall(text):
@@ -378,8 +413,67 @@ def _extract_symbol_from_text(text: str) -> str | None:
             if symbol:
                 return symbol
 
-    stripped = re.sub(r"[^A-Za-z]", "", text)
-    return _normalize_symbol(stripped)
+    return _normalize_symbol(letters_only)
+
+
+def _payload_symbol(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    raw_symbol = payload.get("symbol")
+    if isinstance(raw_symbol, str):
+        return _normalize_symbol(raw_symbol)
+    return None
+
+
+def _resolve_symbol(
+    prompt: str,
+    payload: Any,
+    thread_state: Dict[str, Any],
+    session_memory: SessionMemory | None,
+) -> tuple[str | None, str | None]:
+    prompt_symbol = _extract_symbol_from_text(prompt)
+    payload_symbol = _payload_symbol(payload)
+    thread_symbol = thread_state.get("symbol")
+    memory_symbol = session_memory.primary_symbol if session_memory else None
+    resolved = prompt_symbol or payload_symbol or thread_symbol or memory_symbol
+    return prompt_symbol, resolved
+
+
+def _lookup_and_format_ciks(
+    symbol: str,
+    thread_state: Dict[str, Any],
+    session_memory: SessionMemory | None,
+    settings,
+) -> Dict[str, str]:
+    _reset_thread_state(thread_state)
+    thread_state["symbol"] = symbol
+    thread_state["company_search"] = symbol
+
+    if not settings.enable_network_tools:
+        return {
+            "response": (
+                "SEC lookups are disabled on this deployment, so CIK data is unavailable."
+            )
+        }
+
+    try:
+        candidates = list_ciks_for_symbol(symbol, timeout=settings.http_timeout)
+    except (ValueError, SecLookupError) as exc:
+        _reset_thread_state(thread_state)
+        if session_memory:
+            session_memory.record_failure("list_ciks_for_symbol", str(exc))
+        return {
+            "response": f"Unable to resolve a CIK for '{symbol}': {exc}"
+        }
+
+    thread_state["candidates"] = candidates
+    if session_memory:
+        session_memory.record_tool_event(
+            "list_ciks_for_symbol",
+            "success",
+            f"symbol={symbol} matches={len(candidates)}",
+        )
+    return {"response": format_cik_matches(candidates)}
 
 
 def _collect_system_messages(symbol: str | None) -> Iterable[SystemMessage]:
@@ -551,13 +645,9 @@ def invoke(payload, context):
             }
         return {"response": answer}
 
-    symbol: str | None = None
-    if isinstance(payload, dict):
-        raw_symbol = payload.get("symbol")
-        if isinstance(raw_symbol, str):
-            symbol = _normalize_symbol(raw_symbol)
-    if not symbol:
-        symbol = _extract_symbol_from_text(prompt)
+    prompt_symbol, symbol = _resolve_symbol(
+        prompt, payload, thread_state, session_memory
+    )
 
     if session_memory and symbol:
         session_memory.set_primary_symbol(symbol)
@@ -575,36 +665,37 @@ def invoke(payload, context):
                 retrieved_long_term.append(snippet)
         retrieved_long_term = retrieved_long_term[:3]
 
-    if symbol and symbol != thread_state["symbol"]:
-        _reset_thread_state(thread_state)
-        thread_state["symbol"] = symbol
-        thread_state["company_search"] = symbol
+    needs_cik_lookup = False
+    if prompt_symbol and prompt_symbol != thread_state["symbol"]:
+        needs_cik_lookup = True
+    elif (
+        _is_filings_action(prompt)
+        and symbol
+        and (
+            not thread_state.get("candidates")
+            or thread_state.get("symbol") != symbol
+        )
+        and not thread_state.get("selected_cik")
+    ):
+        needs_cik_lookup = True
 
-        if not settings.enable_network_tools:
-            return {
-                "response": (
-                    "SEC lookups are disabled on this deployment, so CIK data is unavailable."
-                )
-            }
+    if needs_cik_lookup and symbol:
+        return _lookup_and_format_ciks(symbol, thread_state, session_memory, settings)
 
-        try:
-            candidates = list_ciks_for_symbol(symbol, timeout=settings.http_timeout)
-        except (ValueError, SecLookupError) as exc:
-            _reset_thread_state(thread_state)
-            if session_memory:
-                session_memory.record_failure("list_ciks_for_symbol", str(exc))
-            return {
-                "response": f"Unable to resolve a CIK for '{symbol}': {exc}"
-            }
-
-        thread_state["candidates"] = candidates
-        if session_memory:
-            session_memory.record_tool_event(
-                "list_ciks_for_symbol",
-                "success",
-                f"symbol={symbol} matches={len(candidates)}",
+    if _is_filings_action(prompt) and not symbol:
+        return {
+            "response": (
+                "Share a 1-5 letter stock ticker first, then I can look up SEC filings."
             )
-        return {"response": format_cik_matches(candidates)}
+        }
+
+    if (
+        _is_filings_action(prompt)
+        and thread_state.get("candidates")
+        and thread_state.get("symbol") == symbol
+        and not thread_state.get("selected_cik")
+    ):
+        return {"response": format_cik_matches(thread_state["candidates"])}
 
     if (
         thread_state["symbol"]

@@ -23,21 +23,46 @@ let isSending = false;
 let persistedSymbol = null;
 
 const REFRESH_COMMAND = "/refresh";
-const UPPER_SYMBOL_PATTERN = /\b([A-Z]{3,4})\b/g;
-const ALPHA_SYMBOL_PATTERN = /\b([A-Za-z]{3,4})\b/g;
+const UPPER_SYMBOL_PATTERN = /\b([A-Z]{2,5})\b/g;
+const ALPHA_SYMBOL_PATTERN = /\b([A-Za-z]{2,5})\b/g;
+const MENU_INTEGER_PATTERN = /^\s*\d{1,3}\.?\s*$/;
+const FILINGS_ACTION_PATTERN =
+  /(look\s+up\s+(?:sec\s+)?filings?|(?:look\s+up\s+)?sec\s+filings?)/i;
+const SYMBOL_STOPWORDS = new Set([
+  "A", "AM", "AN", "AND", "ARE", "AS", "AT", "BE", "BY", "CAN", "CHAT",
+  "DO", "FAQ", "FILE", "FOR", "FORM", "FROM", "GO", "HAVE", "HE", "HELP",
+  "HI", "HTTP", "HTTPS", "HTML", "IF", "IN", "INC", "INTO", "IS", "IT",
+  "JSON", "JUST", "LOOK", "LTD", "ME", "MORE", "MY", "NEED", "NEW", "NO",
+  "NOT", "OF", "OK", "OLD", "ON", "OR", "OVER", "SEC", "SO", "THAN",
+  "THAT", "THE", "THIS", "TO", "TYPE", "UP", "US", "WANT", "WE", "WHAT",
+  "WHEN", "WILL", "WITH", "YES", "YOU", "YOUR", "ALL", "CORP",
+]);
 
 const normalizeSymbol = (candidate) => {
   if (!candidate) return null;
   const normalized = candidate.trim().toUpperCase();
-  return /^[A-Z]{3,4}$/.test(normalized) ? normalized : null;
+  if (!/^[A-Z]{1,5}$/.test(normalized)) return null;
+  if (SYMBOL_STOPWORDS.has(normalized)) return null;
+  return normalized;
 };
+
+const isMenuInteger = (text) => MENU_INTEGER_PATTERN.test(text || "");
+const isFilingsAction = (text) => FILINGS_ACTION_PATTERN.test(text || "");
 
 const extractSymbolFromText = (text) => {
   if (!text) return null;
   const trimmed = text.trim();
   if (!trimmed) return null;
+  if (isMenuInteger(trimmed)) return null;
+
+  const lettersOnly = trimmed.replace(/[^A-Za-z]/g, "");
+  if (lettersOnly.toUpperCase() === trimmed.replace(/\s+/g, "").toUpperCase()) {
+    const whole = normalizeSymbol(lettersOnly);
+    if (whole) return whole;
+  }
 
   for (const pattern of [UPPER_SYMBOL_PATTERN, ALPHA_SYMBOL_PATTERN]) {
+    pattern.lastIndex = 0;
     for (const match of trimmed.matchAll(pattern)) {
       const normalized = normalizeSymbol(match[1]);
       if (normalized) {
@@ -46,8 +71,7 @@ const extractSymbolFromText = (text) => {
     }
   }
 
-  const fallback = normalizeSymbol(trimmed.replace(/[^A-Za-z]/g, ""));
-  return fallback;
+  return normalizeSymbol(lettersOnly);
 };
 
 const isRefreshCommand = (value) => value.trim().toLowerCase() === REFRESH_COMMAND;
@@ -188,7 +212,7 @@ const sendChat = async (prompt) => {
     await startSession({ resetSymbol: false });
   }
 
-  if (!persistedSymbol) {
+  if (!isMenuInteger(prompt) && !isFilingsAction(prompt)) {
     const detected = extractSymbolFromText(prompt);
     if (detected) {
       persistedSymbol = detected;
@@ -631,6 +655,7 @@ const setPickerOpen = (open) => {
 };
 
 const selectCompany = (company) => {
+  persistedSymbol = company.ticker;
   const entry = `${company.ticker} (${company.name})`;
   const current = chatInput.value.trimEnd();
   chatInput.value = current ? `${current} ${entry}` : entry;
