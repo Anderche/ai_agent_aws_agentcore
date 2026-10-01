@@ -1,3 +1,5 @@
+import { COMPANIES } from "./companies.js";
+
 const chatMessages = document.getElementById("chat-messages");
 const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
@@ -8,6 +10,11 @@ const vectorCount = document.getElementById("vectorstore-count");
 const themeToggle = document.getElementById("theme-toggle");
 const infoToggle = document.getElementById("info-toggle");
 const infoPanel = document.getElementById("info-panel");
+const pickerToggle = document.getElementById("company-picker-toggle");
+const picker = document.getElementById("company-picker");
+const pickerSearch = document.getElementById("company-search");
+const pickerList = document.getElementById("company-list");
+const pickerCount = document.getElementById("company-picker-count");
 
 const THEME_STORAGE_KEY = "agentcore-theme";
 
@@ -457,6 +464,153 @@ if (infoToggle && infoPanel) {
     }
   });
 }
+
+let pickerMatches = COMPANIES;
+let pickerActiveIndex = -1;
+
+const rankCompany = (company, query) => {
+  const ticker = company.ticker.toLowerCase();
+  const name = company.name.toLowerCase();
+  if (ticker === query) return 0;
+  if (ticker.startsWith(query)) return 1;
+  if (name.startsWith(query)) return 2;
+  if (name.split(/[\s\-&.()]+/).some((word) => word.startsWith(query))) return 3;
+  if (name.includes(query)) return 4;
+  return null;
+};
+
+const filterCompanies = (rawQuery) => {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) return COMPANIES;
+  return COMPANIES.map((company) => ({ company, rank: rankCompany(company, query) }))
+    .filter((entry) => entry.rank !== null)
+    .sort((a, b) => a.rank - b.rank)
+    .map((entry) => entry.company);
+};
+
+const setPickerActive = (index) => {
+  const options = pickerList.querySelectorAll("[role='option']");
+  options.forEach((option, i) => option.setAttribute("aria-selected", i === index ? "true" : "false"));
+  pickerActiveIndex = index;
+  const active = options[index];
+  if (active) {
+    pickerSearch.setAttribute("aria-activedescendant", active.id);
+    active.scrollIntoView({ block: "nearest" });
+  } else {
+    pickerSearch.removeAttribute("aria-activedescendant");
+  }
+};
+
+const renderCompanyList = () => {
+  pickerMatches = filterCompanies(pickerSearch.value);
+  pickerList.innerHTML = "";
+  pickerCount.textContent = pickerSearch.value.trim()
+    ? `${pickerMatches.length} of ${COMPANIES.length}`
+    : `${COMPANIES.length} companies`;
+
+  if (!pickerMatches.length) {
+    const empty = document.createElement("li");
+    empty.className = "company-list-empty";
+    empty.textContent = "No match in this demo list. Try the SEC search below.";
+    pickerList.appendChild(empty);
+    setPickerActive(-1);
+    return;
+  }
+
+  pickerMatches.forEach((company, index) => {
+    const option = document.createElement("li");
+    option.id = `company-option-${company.ticker}`;
+    option.className = "company-option";
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", "false");
+    const name = document.createElement("span");
+    name.className = "truncate";
+    name.textContent = company.name;
+    const ticker = document.createElement("span");
+    ticker.className = "company-ticker";
+    ticker.textContent = company.ticker;
+    option.append(name, ticker);
+    option.addEventListener("mousedown", (event) => event.preventDefault());
+    option.addEventListener("click", () => selectCompany(company));
+    option.addEventListener("mousemove", () => {
+      if (pickerActiveIndex !== index) setPickerActive(index);
+    });
+    pickerList.appendChild(option);
+  });
+
+  setPickerActive(pickerSearch.value.trim() ? 0 : -1);
+};
+
+const fitPickerToPanel = () => {
+  const panel = chatForm.closest("section");
+  if (!panel) return;
+  const available = chatForm.getBoundingClientRect().top - panel.getBoundingClientRect().top;
+  picker.style.maxHeight = `${Math.max(available, 160)}px`;
+};
+
+const setPickerOpen = (open) => {
+  picker.hidden = !open;
+  pickerToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    fitPickerToPanel();
+    pickerSearch.value = "";
+    renderCompanyList();
+    pickerList.scrollTop = 0;
+    pickerSearch.focus();
+  }
+};
+
+const selectCompany = (company) => {
+  const entry = `${company.ticker} (${company.name})`;
+  const current = chatInput.value.trimEnd();
+  chatInput.value = current ? `${current} ${entry}` : entry;
+  setPickerOpen(false);
+  chatInput.focus();
+  chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
+};
+
+pickerToggle.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setPickerOpen(picker.hidden);
+});
+
+pickerSearch.addEventListener("input", renderCompanyList);
+
+window.addEventListener("resize", () => {
+  if (!picker.hidden) fitPickerToPanel();
+});
+
+pickerSearch.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    if (!pickerMatches.length) return;
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    const next =
+      pickerActiveIndex === -1
+        ? step === 1
+          ? 0
+          : pickerMatches.length - 1
+        : (pickerActiveIndex + step + pickerMatches.length) % pickerMatches.length;
+    setPickerActive(next);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    const company = pickerMatches[pickerActiveIndex];
+    if (company) selectCompany(company);
+  } else if (event.key === "Escape") {
+    event.stopPropagation();
+    setPickerOpen(false);
+    pickerToggle.focus();
+  }
+});
+
+document.addEventListener("click", (event) => {
+  if (picker.hidden) return;
+  const target = event.target;
+  if (target instanceof Node && (picker.contains(target) || pickerToggle.contains(target))) {
+    return;
+  }
+  setPickerOpen(false);
+});
 
 document.querySelectorAll("[data-collapse-target]").forEach((toggle) => {
   const target = document.getElementById(toggle.dataset.collapseTarget);
