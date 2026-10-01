@@ -54,7 +54,7 @@ Create a `.env` file or export variables before starting the server:
 
 ## Local Data
 - Place FAQ data in `data/faq.json` (copy from `demo_files/faq.json` as a baseline).
-- Vectorstore artifacts live in `data/vectorstores/`; they are read on startup when present.
+- Vectorstore artifacts are generated at runtime in `data/vectorstores/` and are not committed; they are read on startup when present.
 
 ## Deployment Notes
 - **Railway**: Add `Procfile` and `Railway.toml` (already included) and set `APP_ENV=production` plus required secrets. Railway injects `PORT`; the app binds automatically. Production demo lives at <https://aiagentawsagentcore-production.up.railway.app>.
