@@ -3,7 +3,21 @@
 Compact README for the internal proof-of-concept. Keep credentials and identifiers in private channels only.
 
 ## Overview
-This proof-of-concept is a stateful LangGraph assistant for operations and compliance teams, running on Amazon Bedrock through AWS AgentCore. Agent skills include `query_faq`, `lookup_sec_filings` by company ticker, form type, and year, plus optional filing chat over embedded filing vector stores. Capabilities span session memory, `submit_ticket`, `send_slack_notification`, `initiate_sec_inquiry` with Google Form prefill, and `download_reference_document` from local files, HTTP, or S3. A Starlette backend serves the static web UI and terminal CLI.
+A chat assistant for operations and compliance teams. It remembers the conversation, looks things up, and can take a few actions. It runs on Amazon Bedrock (AWS's hosted AI models) through AgentCore (AWS's runtime for this kind of agent).
+
+**What it can look up**
+- `query_faq` — answers from a saved FAQ file, like a searchable help desk.
+- `lookup_sec_filings` — recent SEC filings for a company, by ticker, form type (10-K, 10-Q, and so on), and year.
+- Filing chat — ask questions about one filing after it has been split into searchable chunks.
+
+**What it can do**
+- Session memory — the chat keeps earlier messages, so you do not start over each turn.
+- `submit_ticket` — files a support ticket.
+- `send_slack_notification` — posts a message to Slack.
+- `initiate_sec_inquiry` — starts a review request and opens a prefilled Google Form.
+- `download_reference_document` — pulls a document from your computer, a web link, or S3 (AWS file storage).
+
+You talk to it in a browser or a terminal. A small web server (Starlette) serves both.
 
 ## Quick Start
 ```bash
