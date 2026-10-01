@@ -1,0 +1,57 @@
+/* Tailwind utilities hard-code dark colors; remap them to tokens in light mode. */
+
+html[data-theme="light"] .bg-slate-950 {
+  background-color: var(--surface-page);
+}
+
+html[data-theme="light"] .bg-slate-950\/70,
+html[data-theme="light"] .bg-slate-950\/60 {
+  background-color: var(--surface-input);
+}
+
+html[data-theme="light"] .bg-slate-900\/40,
+html[data-theme="light"] .bg-slate-900\/60,
+html[data-theme="light"] .bg-slate-900\/30 {
+  background-color: var(--surface-panel);
+}
+
+html[data-theme="light"] .bg-slate-800,
+html[data-theme="light"] .bg-slate-800\/70 {
+  background-color: var(--surface-muted);
+}
+
+html[data-theme="light"] .text-white,
+html[data-theme="light"] .text-slate-100,
+html[data-theme="light"] .hover\:text-white:hover {
+  color: var(--text-strong);
+}
+
+html[data-theme="light"] .text-slate-300,
+html[data-theme="light"] .text-slate-400 {
+  color: var(--text-body);
+}
+
+html[data-theme="light"] .text-slate-500,
+html[data-theme="light"] .placeholder\:text-slate-500::placeholder {
+  color: var(--text-muted);
+}
+
+html[data-theme="light"] .text-emerald-300 {
+  color: var(--success-text);
+}
+
+html[data-theme="light"] .text-amber-300 {
+  color: var(--accent-strong);
+}
+
+html[data-theme="light"] .border-slate-800,
+html[data-theme="light"] .border-slate-800\/70,
+html[data-theme="light"] .border-slate-800\/60,
+html[data-theme="light"] .border-slate-700,
+html[data-theme="light"] .border-slate-700\/70 {
+  border-color: var(--border-default);
+}
+
+html[data-theme="light"] .hover\:border-slate-500:hover {
+  border-color: var(--border-hover);
+}
