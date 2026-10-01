@@ -470,3 +470,45 @@ html[data-theme="light"] .vector-answer {
   margin-top: 0.75rem;
 }
 
+.collapse-toggle svg {
+  transition: transform 0.2s ease;
+}
+
+.collapse-toggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+@media (max-width: 1023px) {
+  .collapsible-body[data-collapsed="true"] {
+    display: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .info-panel {
+    left: 0;
+    right: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .chat-bubble {
+    max-width: 92%;
+  }
+
+  .btn-primary {
+    padding: 0.65rem 1rem;
+  }
+
+  .brand-mark {
+    width: 2.25rem;
+    height: 2.25rem;
+    font-size: 1.25rem;
+  }
+
+  .btn-cta {
+    padding: 0.5rem 0.95rem;
+    font-size: 0.875rem;
+  }
+}
+
