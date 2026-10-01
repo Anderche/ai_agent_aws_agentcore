@@ -52,6 +52,13 @@ const createMessageBubble = (text, role) => {
   return bubble;
 };
 
+const scrollToMessageTop = (element) => {
+  const offset =
+    element.getBoundingClientRect().top - chatMessages.getBoundingClientRect().top;
+  const paddingTop = parseFloat(getComputedStyle(chatMessages).paddingTop) || 0;
+  chatMessages.scrollTop += offset - paddingTop;
+};
+
 const appendMessage = (text, role = "agent") => {
   const wrapper = document.createElement("div");
   wrapper.className = "flex";
@@ -60,7 +67,11 @@ const appendMessage = (text, role = "agent") => {
   }
   wrapper.appendChild(createMessageBubble(text, role));
   chatMessages.appendChild(wrapper);
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+  if (role === "user") {
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  } else {
+    scrollToMessageTop(wrapper);
+  }
 };
 
 const createLoadingMessage = () => {
@@ -197,17 +208,16 @@ const sendChat = async (prompt) => {
       throw new Error(`Chat error: ${response.statusText}`);
     }
     const data = await response.json();
+    loadingMessage.remove();
     appendMessage(data.response || "No response received.", "agent");
   } catch (error) {
     console.error(error);
+    loadingMessage.remove();
     appendMessage(
       "Something went wrong delivering your message. Please try again.",
       "agent",
     );
   } finally {
-    if (loadingMessage && loadingMessage.parentElement) {
-      loadingMessage.remove();
-    }
     setChatBusy(false);
   }
 };
