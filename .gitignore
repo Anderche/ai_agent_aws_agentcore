@@ -21,6 +21,7 @@ downloads/*
 data/cost_guards.json
 data/cost_guards.lock
 data/cost_guards.json.tmp
+data/vectorstores/
 
 /reference
 /demo_files
