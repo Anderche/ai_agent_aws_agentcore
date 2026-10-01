@@ -21,7 +21,6 @@ from .sec import SecFiling, build_sec_request_headers
 
 logger = logging.getLogger(__name__)
 
-FILING_VECTOR_TABLE_NAME = "agentcore_filing_vectors"
 FILING_VECTOR_TTL_SECONDS = 3 * 60 * 60  # 3 hours
 MAX_CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 200
@@ -157,8 +156,8 @@ def _download_filing_document(url: str, *, timeout: float) -> str:
     if response.status_code != 200:
         if response.status_code == 403:
             raise FilingChatError(
-                "SEC filing download failed with status 403. Set SEC_USER_AGENT with valid contact details per "
-                f"SEC guidelines for {url}."
+                "SEC filing download failed with status 403. "
+                "The deployment's SEC contact header may need updating."
             )
         raise FilingChatError(
             f"SEC filing download failed with status {response.status_code} for {url}."
@@ -179,28 +178,32 @@ def _store_chunks(
     if len(chunks) != len(embeddings):
         raise FilingChatError("Chunk embeddings are misaligned.")
 
-    table = _ensure_vector_table(settings)
+    table = _vector_table(settings)
     expires_at = int(time.time()) + FILING_VECTOR_TTL_SECONDS
 
-    with table.batch_writer() as batch:
-        for index, (chunk_text, embedding) in enumerate(zip(chunks, embeddings)):
-            vector = [_to_decimal(value) for value in embedding]
-            item = {
-                "session_id": session_id,
-                "chunk_id": f"{index:04d}",
-                "text": chunk_text,
-                "embedding": vector,
-                "cik": cik,
-                "form": filing.form,
-                "filing_date": filing.date,
-                "source_url": filing.url,
-                "expires_at": expires_at,
-            }
-            batch.put_item(Item=item)
+    try:
+        with table.batch_writer() as batch:
+            for index, (chunk_text, embedding) in enumerate(zip(chunks, embeddings)):
+                vector = [_to_decimal(value) for value in embedding]
+                item = {
+                    "session_id": session_id,
+                    "chunk_id": f"{index:04d}",
+                    "text": chunk_text,
+                    "embedding": vector,
+                    "cik": cik,
+                    "form": filing.form,
+                    "filing_date": filing.date,
+                    "source_url": filing.url,
+                    "expires_at": expires_at,
+                }
+                batch.put_item(Item=item)
+    except ClientError as exc:
+        logger.exception("Failed storing filing chunks", exc_info=exc)
+        raise FilingChatError("filing chat storage is unavailable right now.") from exc
 
 
 def _load_chunks(session_id: str, settings: Settings) -> List[dict]:
-    table = _ensure_vector_table(settings)
+    table = _vector_table(settings)
     try:
         response = table.query(
             KeyConditionExpression=Key("session_id").eq(session_id),
@@ -234,50 +237,10 @@ def _rank_chunks(
     return [item for _, item in scored]
 
 
-def _ensure_vector_table(settings: Settings):
+def _vector_table(settings: Settings):
+    """Return the pre-provisioned table (see scripts/create_filing_vector_table.sh)."""
     dynamodb = boto3.resource("dynamodb", region_name=settings.aws_region)
-    table = dynamodb.Table(FILING_VECTOR_TABLE_NAME)
-    try:
-        table.load()
-        return table
-    except dynamodb.meta.client.exceptions.ResourceNotFoundException:  # type: ignore[attr-defined]
-        pass
-
-    logger.info("Creating DynamoDB table %s for filing embeddings", FILING_VECTOR_TABLE_NAME)
-    table = dynamodb.create_table(
-        TableName=FILING_VECTOR_TABLE_NAME,
-        KeySchema=[
-            {"AttributeName": "session_id", "KeyType": "HASH"},
-            {"AttributeName": "chunk_id", "KeyType": "RANGE"},
-        ],
-        AttributeDefinitions=[
-            {"AttributeName": "session_id", "AttributeType": "S"},
-            {"AttributeName": "chunk_id", "AttributeType": "S"},
-        ],
-        BillingMode="PAY_PER_REQUEST",
-    )
-    table.wait_until_exists()
-    _ensure_ttl(FILING_VECTOR_TABLE_NAME, settings)
-    return table
-
-
-def _ensure_ttl(table_name: str, settings: Settings) -> None:
-    client = boto3.client("dynamodb", region_name=settings.aws_region)
-    try:
-        description = client.describe_time_to_live(TableName=table_name)
-        ttl_status = description.get("TimeToLiveDescription", {}).get("TimeToLiveStatus")
-        if ttl_status in {"ENABLED", "ENABLING"}:
-            return
-    except ClientError:
-        pass
-
-    client.update_time_to_live(
-        TableName=table_name,
-        TimeToLiveSpecification={
-            "Enabled": True,
-            "AttributeName": "expires_at",
-        },
-    )
+    return dynamodb.Table(settings.filing_vector_table_name)
 
 
 def _to_decimal(value: float) -> Decimal:

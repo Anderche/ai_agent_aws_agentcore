@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -24,6 +25,8 @@ from .cost_guards import CostGuardBlocked
 from .memory import SessionMemory
 from .rag_pipeline import VECTORSTORE_DIR, query_vectorstore
 
+
+logger = logging.getLogger(__name__)
 
 SessionId = str
 
@@ -83,7 +86,14 @@ async def chat(request: Request) -> JSONResponse:
     if symbol:
         invoke_payload["symbol"] = symbol
 
-    result = invoke(invoke_payload, context=context)
+    try:
+        result = invoke(invoke_payload, context=context)
+    except Exception:  # noqa: BLE001
+        logger.exception("Chat invocation failed")
+        return JSONResponse(
+            {"response": "Something went wrong while handling that request. Please try again."},
+            status_code=500,
+        )
     return JSONResponse({"response": result.get("response")})
 
 
@@ -91,7 +101,7 @@ async def list_vectorstores(_: Request) -> JSONResponse:
     summaries = _discover_vectorstore_summaries()
     response_data = [
         {
-            "path": str(summary.path),
+            "path": summary.path.name,
             "label": summary.label,
             "form": summary.form,
             "filing_date": summary.filing_date,
@@ -118,7 +128,7 @@ async def query_vectorstore_route(request: Request) -> JSONResponse:
     if not question:
         return JSONResponse({"error": "question is required"}, status_code=400)
 
-    vector_path = Path(path_value).resolve()
+    vector_path = (VECTORSTORE_DIR / Path(path_value).name).resolve()
     if not vector_path.is_file():
         return JSONResponse({"error": "Vectorstore path not found."}, status_code=404)
     if VECTORSTORE_DIR.resolve() not in vector_path.parents:
@@ -129,8 +139,11 @@ async def query_vectorstore_route(request: Request) -> JSONResponse:
         answer = query_vectorstore(vector_path, question, settings=settings)
     except CostGuardBlocked as exc:
         return JSONResponse({"error": str(exc)}, status_code=429)
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"error": str(exc)}, status_code=500)
+    except Exception:  # noqa: BLE001
+        logger.exception("Vectorstore query failed")
+        return JSONResponse(
+            {"error": "Unable to answer that question right now."}, status_code=500
+        )
     return JSONResponse({"answer": answer})
 
 
@@ -165,12 +178,14 @@ def create_app() -> Starlette:
         routes.append(Route("/", serve_index, methods=["GET"]))
 
     app = Starlette(routes=routes)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    allowed_origins = load_settings().cors_allowed_origins
+    if allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(allowed_origins),
+            allow_methods=["GET", "POST"],
+            allow_headers=["Content-Type"],
+        )
     return app
 
 

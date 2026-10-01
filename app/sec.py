@@ -151,7 +151,7 @@ def _request_json(url: str, timeout: float) -> dict:
     response = requests.get(url, headers=_sec_request_headers(), timeout=timeout)
     if response.status_code == 403:
         raise SecLookupError(
-            "SEC returned 403 Forbidden. Set SEC_USER_AGENT with contact info per SEC guidelines."
+            "SEC returned 403 Forbidden. The deployment's SEC contact header may need updating."
         )
     if response.status_code == 429:
         raise SecRateLimitError(
@@ -208,7 +208,7 @@ def download_filing_to_directory(
     if response.status_code == 403:
         raise SecDownloadError(
             "SEC returned 403 Forbidden when downloading the filing. "
-            "Ensure SEC_USER_AGENT is set with contact information per SEC guidelines."
+            "The deployment's SEC contact header may need updating."
         )
     if response.status_code == 429:
         raise SecDownloadError(
