@@ -44,6 +44,46 @@
   border-color: rgb(var(--accent-rgb) / 0.3);
 }
 
+.filing-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--surface-raised);
+  padding: 0.2rem 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  color: var(--text-body);
+  white-space: nowrap;
+}
+
+.filing-pill-key {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.filing-pill.ticker {
+  border-color: rgb(var(--accent-rgb) / 0.45);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.filing-pill.ticker .filing-pill-key {
+  color: var(--accent);
+}
+
+.filing-meta {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
+
 .status-pill::before {
   content: "";
   display: inline-block;

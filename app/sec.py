@@ -297,6 +297,41 @@ def list_ciks_for_symbol(symbol: str, *, timeout: float) -> List[CikMatch]:
     return matches
 
 
+@lru_cache(maxsize=1)
+def _company_index_by_cik(timeout: float) -> Dict[str, CikMatch]:
+    data = _request_json(SEC_COMPANY_TICKERS_URL, timeout=timeout)
+    index: Dict[str, CikMatch] = {}
+    for entry in data.values():
+        cik = entry.get("cik_str")
+        if not cik:
+            continue
+        cik_padded = str(cik).zfill(10)
+        # SEC lists the primary share class first; keep it over secondary tickers.
+        index.setdefault(
+            cik_padded,
+            CikMatch(
+                ticker=str(entry.get("ticker", "")).upper(),
+                title=str(entry.get("title", "")).strip(),
+                cik=cik_padded,
+            ),
+        )
+    return index
+
+
+def lookup_companies_by_cik(ciks: Iterable[str], *, timeout: float) -> Dict[str, CikMatch]:
+    """Map CIKs to ticker/company name, returning an empty mapping if SEC is unreachable."""
+    try:
+        index = _company_index_by_cik(timeout)
+    except (SecLookupError, requests.RequestException):
+        return {}
+    matches: Dict[str, CikMatch] = {}
+    for cik in ciks:
+        match = index.get(str(cik).zfill(10))
+        if match:
+            matches[cik] = match
+    return matches
+
+
 def get_cik(company_search: str, *, timeout: float) -> str:
     matches = list_ciks_for_symbol(company_search, timeout=timeout)
     return matches[0].cik

@@ -229,6 +229,51 @@ const sendChat = async (prompt) => {
   }
 };
 
+const FILING_FORMS = {
+  "10-K": ["Annual report", "Audited yearly overview of the business, financial results, and key risks."],
+  "10-Q": ["Quarterly report", "Unaudited quarterly financial results and business update."],
+  "8-K": ["Current report", "Announcement of a major event, such as earnings, leadership changes, or deals."],
+  "6-K": ["Foreign current report", "Major-event or interim update from a non-U.S. company."],
+  "20-F": ["Foreign annual report", "Yearly overview of the business and financials from a non-U.S. company."],
+  "DEF 14A": ["Proxy statement", "Shareholder meeting agenda, executive pay, and items up for a vote."],
+  "S-1": ["IPO registration", "Registration of new shares, typically ahead of an initial public offering."],
+  "3": ["Initial insider holdings", "First disclosure of stock held by a new officer, director, or major shareholder."],
+  "4": ["Insider trade", "An officer, director, or major shareholder bought or sold company stock."],
+  "5": ["Annual insider summary", "Yearly catch-up report of insider transactions not reported earlier."],
+  "SC 13D": ["Activist stake", "An investor disclosed owning more than 5% with intent to influence the company."],
+  "SC 13G": ["Passive stake", "An investor disclosed owning more than 5% as a passive holder."],
+};
+
+const describeForm = (form) => {
+  if (!form) return null;
+  const normalized = form.trim().toUpperCase();
+  const isAmendment = normalized.endsWith("/A");
+  const match = FILING_FORMS[isAmendment ? normalized.slice(0, -2) : normalized];
+  if (!match) return null;
+  const [name, summary] = match;
+  return {
+    name: isAmendment ? `${name} (amended)` : name,
+    summary: isAmendment ? `Correction or update to an earlier filing. ${summary}` : summary,
+  };
+};
+
+const formatFilingDate = (value) => {
+  if (!value) return null;
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+};
+
+const escapeHtml = (value) =>
+  String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+const renderFilingPill = (key, value, { className = "", title = "" } = {}) =>
+  `<span class="filing-pill ${className}"${title ? ` title="${escapeHtml(title)}"` : ""}><span class="filing-pill-key">${key}</span>${escapeHtml(value)}</span>`;
+
 const renderVectorstores = (items) => {
   vectorList.innerHTML = "";
   if (!items.length) {
@@ -244,28 +289,53 @@ const renderVectorstores = (items) => {
     const card = document.createElement("article");
     card.className =
       "filing-card space-y-4 rounded-md border border-slate-800/60 bg-slate-950/60 p-5";
-    const filingsMeta = [
-      item.form ? `Form ${item.form}` : null,
-      item.filing_date ? `Filed ${item.filing_date}` : null,
-      item.cik ? `CIK ${item.cik}` : null,
+    const formInfo = describeForm(item.form);
+    const filedOn = formatFilingDate(item.filing_date);
+    const pills = [
+      item.ticker
+        ? renderFilingPill("Ticker", item.ticker, {
+            className: "ticker",
+            title: "Stock ticker symbol",
+          })
+        : null,
+      item.form
+        ? renderFilingPill(
+            "Form",
+            formInfo ? `${item.form} · ${formInfo.name}` : item.form,
+            { title: "SEC filing type" },
+          )
+        : null,
+      filedOn
+        ? renderFilingPill("Filed", filedOn, { title: "Date the filing was submitted to the SEC" })
+        : null,
     ]
       .filter(Boolean)
-      .join(" • ");
+      .join("");
+    const formSummary = formInfo
+      ? formInfo.summary
+      : item.form
+        ? `SEC Form ${escapeHtml(item.form)} filing.`
+        : "Filing type not available.";
+    const technicalMeta = [item.cik ? `CIK ${item.cik}` : null, item.label]
+      .filter(Boolean)
+      .map(escapeHtml)
+      .join(" · ");
 
     card.innerHTML = `
-      <div class="flex flex-col gap-2">
+      <div class="flex flex-col gap-3">
         <div class="flex items-start justify-between gap-3">
-          <div>
-            <h3 class="font-display text-xl text-white">${item.label}</h3>
-            <p class="text-sm text-slate-400">${filingsMeta || "Metadata not available"}</p>
+          <div class="min-w-0">
+            <h3 class="font-display text-xl text-white">${escapeHtml(item.company_name || item.label)}</h3>
+            <p class="mt-1 text-sm text-slate-400">${formSummary}</p>
           </div>
           ${
             item.source_url
-              ? `<a href="${item.source_url}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 rounded-full bg-slate-800/70 px-3 py-1 text-xs font-medium text-slate-300 hover:text-amber-300">Source<span aria-hidden="true">↗</span></a>`
+              ? `<a href="${item.source_url}" target="_blank" rel="noopener noreferrer" class="inline-flex shrink-0 items-center gap-1 rounded-full bg-slate-800/70 px-3 py-1 text-xs font-medium text-slate-300 hover:text-amber-300" title="Open the original filing on sec.gov">View on SEC<span aria-hidden="true">↗</span></a>`
               : ""
           }
         </div>
-        <p class="text-sm text-slate-400">${item.description}</p>
+        ${pills ? `<div class="flex flex-wrap gap-2">${pills}</div>` : ""}
+        <p class="filing-meta" title="SEC company ID and source document name">${technicalMeta}</p>
       </div>
       <form class="vector-form space-y-3" data-path="${item.path}">
         <label class="text-xs font-semibold uppercase tracking-wide text-slate-400" for="question-${btoa(

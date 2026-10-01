@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -24,6 +25,7 @@ from .config import load_settings
 from .cost_guards import CostGuardBlocked
 from .memory import SessionMemory
 from .rag_pipeline import VECTORSTORE_DIR, query_vectorstore
+from .sec import lookup_companies_by_cik
 
 
 logger = logging.getLogger(__name__)
@@ -99,10 +101,16 @@ async def chat(request: Request) -> JSONResponse:
 
 async def list_vectorstores(_: Request) -> JSONResponse:
     summaries = _discover_vectorstore_summaries()
+    ciks = {summary.cik for summary in summaries if summary.cik}
+    companies = await run_in_threadpool(
+        lookup_companies_by_cik, ciks, timeout=load_settings().http_timeout
+    )
     response_data = [
         {
             "path": summary.path.name,
             "label": summary.label,
+            "ticker": companies[summary.cik].ticker if summary.cik in companies else None,
+            "company_name": companies[summary.cik].title if summary.cik in companies else None,
             "form": summary.form,
             "filing_date": summary.filing_date,
             "cik": summary.cik,
