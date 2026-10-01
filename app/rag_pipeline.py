@@ -237,40 +237,55 @@ def query_vectorstore(
     if not question.strip():
         raise RagQueryError("Question must be a non-empty string.")
 
-    embeddings_model = BedrockEmbeddings(
-        model_id=settings.bedrock_embedding_model_id,
-        region_name=settings.aws_region,
+    from .cost_guards import (
+        commit_bedrock_reply,
+        release_bedrock_reply,
+        reserve_bedrock_reply,
     )
+
     records = _load_vector_records(vectorstore_path)
-    query_embedding = embeddings_model.embed_query(question)
-    top_records = _rank_vector_records(query_embedding, records, top_k=top_k)
+    reply_reserved = reserve_bedrock_reply(settings)
+    try:
+        embeddings_model = BedrockEmbeddings(
+            model_id=settings.bedrock_embedding_model_id,
+            region_name=settings.aws_region,
+        )
+        query_embedding = embeddings_model.embed_query(question)
+        top_records = _rank_vector_records(query_embedding, records, top_k=top_k)
 
-    context_sections: List[str] = []
-    for record in top_records:
-        metadata = record.get("metadata", {})
-        summary = record.get("summary") or ""
-        text = record.get("text") or ""
-        chunk_id = metadata.get("chunk_index")
-        source_url = metadata.get("source_url") or vectorstore_path.stem
-        header = f"Chunk {chunk_id} (source: {source_url})"
-        section = f"{header}\nSummary: {summary}\nContent: {text}"
-        context_sections.append(section.strip())
+        context_sections: List[str] = []
+        for record in top_records:
+            metadata = record.get("metadata", {})
+            summary = record.get("summary") or ""
+            text = record.get("text") or ""
+            chunk_id = metadata.get("chunk_index")
+            source_url = metadata.get("source_url") or vectorstore_path.stem
+            header = f"Chunk {chunk_id} (source: {source_url})"
+            section = f"{header}\nSummary: {summary}\nContent: {text}"
+            context_sections.append(section.strip())
 
-    if not context_sections:
-        raise RagQueryError("No relevant chunks found in vector store.")
+        if not context_sections:
+            raise RagQueryError("No relevant chunks found in vector store.")
 
-    context = "\n\n---\n\n".join(context_sections)
-    llm = ChatBedrock(
-        model_id=settings.bedrock_model_id,
-        region_name=settings.aws_region,
-    )
-    prompt = (
-        "You are analyzing SEC filing excerpts retrieved via embeddings. "
-        "Use only the provided context to answer the question in a concise, well-structured format. "
-        "If the context is insufficient, state that explicitly.\n\n"
-        f"Context:\n{context}\n\nQuestion: {question}"
-    )
-    response = llm.invoke(prompt)
+        context = "\n\n---\n\n".join(context_sections)
+        llm = ChatBedrock(
+            model_id=settings.bedrock_model_id,
+            region_name=settings.aws_region,
+        )
+        prompt = (
+            "You are analyzing SEC filing excerpts retrieved via embeddings. "
+            "Use only the provided context to answer the question in a concise, well-structured format. "
+            "If the context is insufficient, state that explicitly.\n\n"
+            f"Context:\n{context}\n\nQuestion: {question}"
+        )
+        response = llm.invoke(prompt)
+    except Exception:
+        if reply_reserved:
+            release_bedrock_reply(settings)
+        raise
+    else:
+        if reply_reserved:
+            commit_bedrock_reply(settings)
     return getattr(response, "content", str(response))
 
 

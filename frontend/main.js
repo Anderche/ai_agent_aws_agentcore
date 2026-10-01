@@ -5,6 +5,11 @@ const restartButton = document.getElementById("restart-session");
 const sessionPill = document.getElementById("chat-session-pill");
 const vectorList = document.getElementById("vectorstore-list");
 const vectorCount = document.getElementById("vectorstore-count");
+const themeToggle = document.getElementById("theme-toggle");
+const infoToggle = document.getElementById("info-toggle");
+const infoPanel = document.getElementById("info-panel");
+
+const THEME_STORAGE_KEY = "agentcore-theme";
 
 let sessionId = null;
 let isSending = false;
@@ -129,7 +134,7 @@ const startSession = async ({ resetSymbol = true } = {}) => {
   }
   sessionId = null;
   chatMessages.innerHTML = "";
-  appendMessage("Connecting to AgentCore assistant…", "agent");
+  appendMessage("Connecting to the filing assistant…", "agent");
   setChatBusy(true);
   sessionPill.classList.add("hidden");
   try {
@@ -221,7 +226,7 @@ const renderVectorstores = (items) => {
   items.forEach((item) => {
     const card = document.createElement("article");
     card.className =
-      "space-y-4 rounded-xl border border-slate-800/60 bg-slate-950/60 p-5 shadow-inner shadow-slate-950/40";
+      "filing-card space-y-4 rounded-xl border border-slate-800/60 bg-slate-950/60 p-5";
     const filingsMeta = [
       item.form ? `Form ${item.form}` : null,
       item.filing_date ? `Filed ${item.filing_date}` : null,
@@ -234,7 +239,7 @@ const renderVectorstores = (items) => {
       <div class="flex flex-col gap-2">
         <div class="flex items-start justify-between gap-3">
           <div>
-            <h3 class="text-base font-semibold text-white">${item.label}</h3>
+            <h3 class="font-display text-lg font-medium text-white">${item.label}</h3>
             <p class="text-sm text-slate-400">${filingsMeta || "Metadata not available"}</p>
           </div>
           ${
@@ -260,7 +265,7 @@ const renderVectorstores = (items) => {
           />
           <button
             type="submit"
-            class="inline-flex items-center justify-center rounded-xl bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
+            class="btn-secondary"
           >
             Run Query
           </button>
@@ -293,7 +298,17 @@ const renderVectorstores = (items) => {
           }),
         });
         if (!response.ok) {
-          throw new Error("Vectorstore query failed.");
+          let message =
+            "There was an issue querying this filing. Ensure the embedding exists and try again.";
+          try {
+            const errorBody = await response.json();
+            if (errorBody && typeof errorBody.error === "string" && errorBody.error.trim()) {
+              message = errorBody.error;
+            }
+          } catch (parseError) {
+            console.error(parseError);
+          }
+          throw new Error(message);
         }
         const data = await response.json();
         const answerBlock = document.createElement("div");
@@ -316,7 +331,9 @@ const renderVectorstores = (items) => {
         const errorBlock = document.createElement("div");
         errorBlock.className = "vector-answer";
         errorBlock.textContent =
-          "There was an issue querying this filing. Ensure the embedding exists and try again.";
+          error instanceof Error && error.message
+            ? error.message
+            : "There was an issue querying this filing. Ensure the embedding exists and try again.";
         answersContainer.prepend(errorBlock);
       } finally {
         form.querySelector("button").disabled = false;
@@ -380,6 +397,56 @@ chatInput.addEventListener("keydown", (event) => {
 restartButton.addEventListener("click", async () => {
   await handleRefreshCommand();
 });
+
+const applyTheme = (theme) => {
+  const next = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  if (themeToggle) {
+    themeToggle.setAttribute("aria-pressed", next === "light" ? "true" : "false");
+  }
+};
+
+applyTheme(document.documentElement.dataset.theme || "dark");
+
+if (themeToggle) {
+  themeToggle.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch (error) {
+      console.error(error);
+    }
+    applyTheme(next);
+  });
+}
+
+const setInfoOpen = (open) => {
+  if (!infoPanel || !infoToggle) return;
+  infoPanel.hidden = !open;
+  infoToggle.setAttribute("aria-expanded", open ? "true" : "false");
+};
+
+if (infoToggle && infoPanel) {
+  infoToggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setInfoOpen(infoPanel.hidden);
+  });
+
+  document.addEventListener("click", (event) => {
+    if (infoPanel.hidden) return;
+    const target = event.target;
+    if (target instanceof Node && (infoPanel.contains(target) || infoToggle.contains(target))) {
+      return;
+    }
+    setInfoOpen(false);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      setInfoOpen(false);
+    }
+  });
+}
 
 window.addEventListener("DOMContentLoaded", async () => {
   await Promise.all([startSession(), loadVectorstores()]);

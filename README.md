@@ -36,6 +36,11 @@ Create a `.env` file or export variables before starting the server:
 - `ENABLE_NETWORK_TOOLS`: `false` to stay offline, `true` to enable external calls.
 - `FAQ_PATH`: Path to the FAQ JSON file (defaults to `data/faq.json`).
 - Optional integrations: Slack webhook, Google Form URLs, SEC inquiry storage paths.
+- `MAX_EMBEDDED_FILINGS`: shared cap on filings embedded into the local vectorstore (default `3`).
+- `MAX_FILING_CHAT_PREPARES`: shared cap on filing-chat sessions prepared with Bedrock embeddings (default `2`).
+- `MAX_BEDROCK_REPLIES`: shared cap on assistant replies that call Bedrock (default `20`). SEC lookups and menus do not count.
+- `COST_GUARDS_DISABLED`: `true` skips every cap.
+- `COST_GUARDS_RESET`: `true` on startup zeros the filing-chat and reply counters and allows the next embed cap on top of vectorstore files already on disk. Turn it back to `false` after that restart so later boots do not reset the budget.
 
 ## Local Data
 - Place FAQ data in `data/faq.json` (copy from `demo_files/faq.json` as a baseline).
