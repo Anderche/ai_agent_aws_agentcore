@@ -14,6 +14,13 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .config import load_settings
+from .faq import load_faq
+from .routing import (
+    extract_symbol_from_text as _extract_symbol_from_text,
+    is_filings_action as _is_filings_action,
+    normalize_symbol as _normalize_symbol,
+    resolve_pre_llm_route,
+)
 from .cost_guards import (
     CostGuardBlocked,
     apply_startup_reset,
@@ -71,7 +78,10 @@ BASE_SYSTEM_PROMPT = (
     "You are the AgentCore proof-of-concept assistant supporting operations and compliance teams. "
     "Provide clear, tactical guidance, use tools when appropriate, and keep responses concise. "
     "When you list next actions or choices, number them 1. 2. 3. so the user can reply with a single integer. "
-    "Never treat the word SEC as a company ticker; use the user's previously provided ticker when looking up filings."
+    "Never treat the word SEC or question words such as how, use, or query as company tickers; "
+    "use the user's previously provided ticker when looking up filings. "
+    "For how-to and policy questions, call query_faq. "
+    "Call lookup_sec_filings only for a company plus form such as 'Apple 10-K'."
 )
 
 TICKER_REMINDER_PROMPT = (
@@ -106,29 +116,12 @@ def _format_sec_rate_limit_message(company_reference: str | None) -> str:
     )
 
 
-_UPPER_SYMBOL_PATTERN = re.compile(r"\b([A-Z]{2,5})\b")
-_ALPHA_SYMBOL_PATTERN = re.compile(r"\b([A-Za-z]{2,5})\b")
-_MENU_INTEGER_PATTERN = re.compile(r"^\s*\d{1,3}\.?\s*$")
-_FILINGS_ACTION_PATTERN = re.compile(
-    r"(look\s+up\s+(?:sec\s+)?filings?|(?:look\s+up\s+)?sec\s+filings?)",
-    re.IGNORECASE,
-)
 _CHAT_FILING_PATTERN = re.compile(
     r"\bchat\b.*\bfiling", re.IGNORECASE
 )
 _EXIT_FILING_CHAT_PATTERN = re.compile(
     r"\b(exit|quit|stop)\b.*\bfiling\b", re.IGNORECASE
 )
-_SYMBOL_STOPWORDS = {
-    "A", "AM", "AN", "AND", "ARE", "AS", "AT", "BE", "BY", "CAN", "CHAT",
-    "DO", "FAQ", "FILE", "FOR", "FORM", "FROM", "GO", "HAVE", "HE", "HELP",
-    "HI", "HTTP", "HTTPS", "HTML", "IF", "IN", "INC", "INTO", "IS", "IT",
-    "JSON", "JUST", "LOOK", "LTD", "ME", "MORE", "MY", "NEED", "NEW", "NO",
-    "NOT", "OF", "OK", "OLD", "ON", "OR", "OVER", "SEC", "SO", "THAN",
-    "THAT", "THE", "THIS", "TO", "TYPE", "UP", "US", "WANT", "WE", "WHAT",
-    "WHEN", "WILL", "WITH", "YES", "YOU", "YOUR", "ALL", "CORP",
-}
-
 logger = logging.getLogger(__name__)
 
 
@@ -375,53 +368,12 @@ def _extract_prompt(payload: Dict[str, Any]) -> str:
     return ""
 
 
-def _normalize_symbol(candidate: str | None) -> str | None:
-    if not candidate:
-        return None
-    symbol = candidate.strip().upper()
-    if not symbol.isalpha() or not 1 <= len(symbol) <= 5:
-        return None
-    if symbol in _SYMBOL_STOPWORDS:
-        return None
-    return symbol
-
-
-def _is_menu_integer(text: str) -> bool:
-    return bool(text and _MENU_INTEGER_PATTERN.match(text))
-
-
-def _is_filings_action(text: str) -> bool:
-    return bool(text and _FILINGS_ACTION_PATTERN.search(text))
-
-
-def _extract_symbol_from_text(text: str) -> str | None:
-    if not text:
-        return None
-    if _is_menu_integer(text):
-        return None
-
-    stripped = text.strip()
-    letters_only = re.sub(r"[^A-Za-z]", "", stripped)
-    if letters_only.upper() == stripped.replace(" ", "").upper() or stripped.upper() == letters_only.upper():
-        whole = _normalize_symbol(letters_only)
-        if whole:
-            return whole
-
-    for pattern in (_UPPER_SYMBOL_PATTERN, _ALPHA_SYMBOL_PATTERN):
-        for match in pattern.findall(text):
-            symbol = _normalize_symbol(match)
-            if symbol:
-                return symbol
-
-    return _normalize_symbol(letters_only)
-
-
 def _payload_symbol(payload: Any) -> str | None:
     if not isinstance(payload, dict):
         return None
     raw_symbol = payload.get("symbol")
     if isinstance(raw_symbol, str):
-        return _normalize_symbol(raw_symbol)
+        return _normalize_symbol(raw_symbol, allow_stopwords=True)
     return None
 
 
@@ -645,6 +597,20 @@ def invoke(payload, context):
             }
         return {"response": answer}
 
+    faq_data = load_faq(settings.faq_path)
+    has_symbol_context = bool(
+        _payload_symbol(payload)
+        or thread_state.get("symbol")
+        or (session_memory.primary_symbol if session_memory else None)
+    )
+    route, faq_answer = resolve_pre_llm_route(
+        prompt,
+        faq_data,
+        has_symbol_context=has_symbol_context,
+    )
+    if route == "faq" and faq_answer:
+        return {"response": faq_answer}
+
     prompt_symbol, symbol = _resolve_symbol(
         prompt, payload, thread_state, session_memory
     )
@@ -666,10 +632,11 @@ def invoke(payload, context):
         retrieved_long_term = retrieved_long_term[:3]
 
     needs_cik_lookup = False
-    if prompt_symbol and prompt_symbol != thread_state["symbol"]:
+    if route == "cik" and prompt_symbol and prompt_symbol != thread_state["symbol"]:
         needs_cik_lookup = True
     elif (
-        _is_filings_action(prompt)
+        route == "cik"
+        and _is_filings_action(prompt)
         and symbol
         and (
             not thread_state.get("candidates")

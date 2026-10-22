@@ -167,7 +167,7 @@ def send_slack_notification(message: str, channel: str | None = None) -> str:
 
 @tool
 def query_faq(question: str) -> str:
-    """Return an answer from the static FAQ data."""
+    """Answer how-to and policy questions from the static FAQ, including how to look up SEC filings."""
     settings = load_settings()
     faq_data = load_faq(settings.faq_path)
     answer = lookup_faq(question, faq_data)
@@ -180,7 +180,7 @@ def query_faq(question: str) -> str:
 
 @tool
 def lookup_sec_filings(query: str) -> str:
-    """Retrieve recent SEC EDGAR filings for a given 'Company Form' query."""
+    """Retrieve recent SEC EDGAR filings. Use only for a 'Company Form' query such as 'Apple 10-K', never for how-to questions."""
     settings = load_settings()
     if not settings.enable_network_tools:
         return _network_disabled_response("lookup_sec_filings")

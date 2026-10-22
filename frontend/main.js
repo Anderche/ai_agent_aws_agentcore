@@ -24,30 +24,72 @@ let persistedSymbol = null;
 
 const REFRESH_COMMAND = "/refresh";
 const UPPER_SYMBOL_PATTERN = /\b([A-Z]{2,5})\b/g;
-const ALPHA_SYMBOL_PATTERN = /\b([A-Za-z]{2,5})\b/g;
 const MENU_INTEGER_PATTERN = /^\s*\d{1,3}\.?\s*$/;
 const FILINGS_ACTION_PATTERN =
   /(look\s+up\s+(?:sec\s+)?filings?|(?:look\s+up\s+)?sec\s+filings?)/i;
+const DOLLAR_TICKER_PATTERN = /\$([A-Za-z]{1,5})\b/;
+const QUESTION_STARTERS = new Set([
+  "HOW", "WHAT", "WHEN", "WHY", "WHO", "WHERE", "CAN", "DO", "DOES",
+  "DID", "IS", "ARE", "PLEASE", "USE", "QUERY", "COULD", "WOULD",
+  "SHOULD", "MAY",
+]);
 const SYMBOL_STOPWORDS = new Set([
-  "A", "AM", "AN", "AND", "ARE", "AS", "AT", "BE", "BY", "CAN", "CHAT",
-  "DO", "FAQ", "FILE", "FOR", "FORM", "FROM", "GO", "HAVE", "HE", "HELP",
-  "HI", "HTTP", "HTTPS", "HTML", "IF", "IN", "INC", "INTO", "IS", "IT",
-  "JSON", "JUST", "LOOK", "LTD", "ME", "MORE", "MY", "NEED", "NEW", "NO",
-  "NOT", "OF", "OK", "OLD", "ON", "OR", "OVER", "SEC", "SO", "THAN",
-  "THAT", "THE", "THIS", "TO", "TYPE", "UP", "US", "WANT", "WE", "WHAT",
-  "WHEN", "WILL", "WITH", "YES", "YOU", "YOUR", "ALL", "CORP",
+  "A", "ABOUT", "ALL", "ALSO", "AM", "AN", "AND", "ANSWER", "ANY", "ARE",
+  "AS", "ASK", "AT", "BE", "BEEN", "BEING", "BUT", "BY", "CAN", "CHAT",
+  "COULD", "DID", "DO", "DOES", "FAQ", "FILE", "FOR", "FORM", "FROM",
+  "GET", "GO", "HAD", "HAS", "HAVE", "HE", "HELP", "HI", "HOW", "HTTP",
+  "HTTPS", "HTML", "IF", "IN", "INC", "INTO", "IS", "IT", "ITS", "JSON",
+  "JUST", "LOOK", "LTD", "MAY", "ME", "MIGHT", "MORE", "MUST", "MY",
+  "NEED", "NEW", "NO", "NOT", "OF", "OK", "OLD", "ON", "OR", "OUR",
+  "OUT", "OVER", "PER", "PLEASE", "QUERY", "SEC", "SHOULD", "SHOW", "SO",
+  "TELL", "THAN", "THAT", "THE", "THEM", "THEN", "THEY", "THIS", "TO",
+  "TOOL", "TYPE", "UP", "US", "USE", "VIA", "WANT", "WAS", "WE", "WERE",
+  "WHAT", "WHEN", "WHERE", "WHICH", "WHO", "WHY", "WILL", "WITH", "WOULD",
+  "YES", "YOU", "YOUR", "CORP",
 ]);
 
-const normalizeSymbol = (candidate) => {
+const normalizeSymbol = (candidate, { allowStopwords = false } = {}) => {
   if (!candidate) return null;
   const normalized = candidate.trim().toUpperCase();
   if (!/^[A-Z]{1,5}$/.test(normalized)) return null;
-  if (SYMBOL_STOPWORDS.has(normalized)) return null;
+  if (!allowStopwords && SYMBOL_STOPWORDS.has(normalized)) return null;
   return normalized;
 };
 
 const isMenuInteger = (text) => MENU_INTEGER_PATTERN.test(text || "");
 const isFilingsAction = (text) => FILINGS_ACTION_PATTERN.test(text || "");
+
+const looksLikeQuestion = (text) => {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return false;
+  if (trimmed.endsWith("?")) return true;
+  const first = trimmed.split(/\s+/)[0].replace(/[^A-Za-z]/g, "").toUpperCase();
+  return QUESTION_STARTERS.has(first);
+};
+
+const isBareSymbolMessage = (text) => {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return false;
+  const lettersOnly = trimmed.replace(/[^A-Za-z]/g, "");
+  if (!lettersOnly) return false;
+  return lettersOnly.toUpperCase() === trimmed.replace(/\s+/g, "").toUpperCase();
+};
+
+const hasExplicitTicker = (text) => {
+  if (!text) return false;
+  if (DOLLAR_TICKER_PATTERN.test(text)) return true;
+  if (isBareSymbolMessage(text)) {
+    const lettersOnly = text.replace(/[^A-Za-z]/g, "");
+    return Boolean(normalizeSymbol(lettersOnly, { allowStopwords: true }));
+  }
+  UPPER_SYMBOL_PATTERN.lastIndex = 0;
+  for (const match of text.matchAll(UPPER_SYMBOL_PATTERN)) {
+    if (normalizeSymbol(match[1], { allowStopwords: false })) {
+      return true;
+    }
+  }
+  return false;
+};
 
 const extractSymbolFromText = (text) => {
   if (!text) return null;
@@ -56,22 +98,30 @@ const extractSymbolFromText = (text) => {
   if (isMenuInteger(trimmed)) return null;
 
   const lettersOnly = trimmed.replace(/[^A-Za-z]/g, "");
-  if (lettersOnly.toUpperCase() === trimmed.replace(/\s+/g, "").toUpperCase()) {
-    const whole = normalizeSymbol(lettersOnly);
+  if (isBareSymbolMessage(trimmed)) {
+    const whole = normalizeSymbol(lettersOnly, { allowStopwords: true });
     if (whole) return whole;
   }
 
-  for (const pattern of [UPPER_SYMBOL_PATTERN, ALPHA_SYMBOL_PATTERN]) {
-    pattern.lastIndex = 0;
-    for (const match of trimmed.matchAll(pattern)) {
-      const normalized = normalizeSymbol(match[1]);
-      if (normalized) {
-        return normalized;
-      }
+  const dollar = trimmed.match(DOLLAR_TICKER_PATTERN);
+  if (dollar) {
+    return normalizeSymbol(dollar[1], { allowStopwords: true });
+  }
+
+  const skipHeuristic =
+    looksLikeQuestion(trimmed) ||
+    (isFilingsAction(trimmed) && !hasExplicitTicker(trimmed));
+
+  UPPER_SYMBOL_PATTERN.lastIndex = 0;
+  for (const match of trimmed.matchAll(UPPER_SYMBOL_PATTERN)) {
+    const normalized = normalizeSymbol(match[1], { allowStopwords: false });
+    if (normalized) {
+      return normalized;
     }
   }
 
-  return normalizeSymbol(lettersOnly);
+  if (skipHeuristic) return null;
+  return null;
 };
 
 const isRefreshCommand = (value) => value.trim().toLowerCase() === REFRESH_COMMAND;
@@ -212,7 +262,7 @@ const sendChat = async (prompt) => {
     await startSession({ resetSymbol: false });
   }
 
-  if (!isMenuInteger(prompt) && !isFilingsAction(prompt)) {
+  if (!isMenuInteger(prompt)) {
     const detected = extractSymbolFromText(prompt);
     if (detected) {
       persistedSymbol = detected;

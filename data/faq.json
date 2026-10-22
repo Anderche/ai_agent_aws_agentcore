@@ -3,8 +3,13 @@
     "How do I reset my password?": "Go to the login page, choose 'Forgot Password', and follow the emailed steps.",
     "What are business hours?": "We are open from 9 AM to 5 PM, Monday to Friday.",
     "How do I submit an expense report?": "Use the staff portal at https://expenses.company.com and upload receipts within 7 days.",
-    "How do I look up SEC filings?": "Ask the assistant for 'Company Form' (example: 'Apple 10-K') after enabling network tools."
+    "How do I look up SEC filings?": "Ask the assistant for 'Company Form' (example: 'Apple 10-K') after enabling network tools.",
+    "How do I submit a ticket?": "Share a short summary of the issue. I can file a support ticket when ticket submission is configured.",
+    "How do I notify Slack?": "Ask me to send a Slack message with the text. Slack posting needs a webhook configured on this deployment.",
+    "How do I start an SEC inquiry?": "Provide the company, form type, and optional CIK. I will record the inquiry and return a Google Form link when configured.",
+    "How do I download a reference?": "Send a public https:// link or an allowlisted s3:// location. Local files and private network addresses are refused.",
+    "How do I chat about filings?": "First look up filings, select one from the list, then ask to chat about that filing after it is prepared.",
+    "What ticker format should I use?": "Use a 1-5 letter stock ticker such as AAPL, or a company plus form like Apple 10-K.",
+    "How do I pick a company?": "Type a ticker, or use the company picker in the web UI. I will then resolve matching SEC CIKs.",
+    "What is a CIK number?": "A CIK is the SEC's 10-digit company identifier. After you share a ticker I list matching CIKs to choose from."
 }
-
-
-
